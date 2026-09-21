@@ -1,131 +1,149 @@
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update, ReplyKeyboardMarkup
-
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 MENU = [
-
     ["👟 محصولات", "🔎 جستجو با کد"],
-
     ["🛒 ثبت سفارش", "📦 پیگیری سفارش"],
-
-    ["👨‍💬 پشتیبانی", "🌐 سایت فروشگاه"]
-
+    ["👨‍💬 پشتیبانی", "🌐 سایت فروشگاه"],
 ]
 
 keyboard = ReplyKeyboardMarkup(MENU, resize_keyboard=True)
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
-
-        "سلام 👋\n"
-
+        "سلام 👋\n\n"
         "به فروشگاه کتونی 530 خوش آمدید 👟\n\n"
-
-        "از منوی زیر انتخاب کنید:",
-
-        reply_markup=keyboard
-
+        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
+        reply_markup=keyboard,
     )
 
-async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👟 بخش محصولات\n\n"
+        "به‌زودی محصولات فروشگاه اینجا نمایش داده می‌شوند."
+    )
+
+
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔎 کد کفش را ارسال کنید.\n\n"
+        "مثال:\nK530-05"
+    )
+
+
+async def order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🛒 ثبت سفارش\n\n"
+        "کد کفش و سایز موردنظر خود را ارسال کنید."
+    )
+
+
+async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📦 پیگیری سفارش\n\n"
+        "شماره سفارش خود را ارسال کنید."
+    )
+
+
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👨‍💬 پشتیبانی فروشگاه کتونی 530\n\n"
+        "پیام خود را ارسال کنید."
+    )
+
+
+async def website(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🌐 سایت فروشگاه:\n"
+        "https://katoni530.com"
+    )
+
+
+async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if text == "👟 محصولات":
-
-        await update.message.reply_text(
-
-            "👟 جدیدترین محصولات کتونی 530\n"
-
-            "به‌زودی محصولات سایت اینجا نمایش داده می‌شوند."
-
-        )
+        await products(update, context)
 
     elif text == "🔎 جستجو با کد":
-
-        context.user_data["search"] = True
-
-        await update.message.reply_text(
-
-            "🔎 کد کفش را بفرستید.\nمثال: K530-05"
-
-        )
+        await search(update, context)
 
     elif text == "🛒 ثبت سفارش":
-
-        await update.message.reply_text(
-
-            "🛒 کد کفش و سایز موردنظر را ارسال کنید."
-
-        )
+        await order(update, context)
 
     elif text == "📦 پیگیری سفارش":
-
-        await update.message.reply_text(
-
-            "📦 شماره سفارش خود را ارسال کنید."
-
-        )
+        await track(update, context)
 
     elif text == "👨‍💬 پشتیبانی":
-
-        await update.message.reply_text(
-
-            "👨‍💬 پشتیبانی:\n@katoni_530"
-
-        )
+        await support(update, context)
 
     elif text == "🌐 سایت فروشگاه":
-
-        await update.message.reply_text(
-
-            "🌐 katoni530.com"
-
-        )
-
-    elif context.user_data.get("search"):
-
-        context.user_data["search"] = False
-
-        await update.message.reply_text(
-
-            f"🔎 کد محصول: {text}\n"
-
-            "در مرحله بعد این قسمت به محصولات سایت وصل می‌شود."
-
-        )
+        await website(update, context)
 
     else:
-
         await update.message.reply_text(
-
-            "یکی از گزینه‌های منو را انتخاب کنید 👇",
-
-            reply_markup=keyboard
-
+            f"🔎 کد دریافت شد:\n{text}\n\n"
+            "در مرحله بعد جستجوی محصول را به سایت فروشگاه وصل می‌کنیم."
         )
 
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Katoni 530 bot is running")
+
+    def log_message(self, format, *args):
+        return
+
+
+def run_health_server():
+    port = int(os.getenv("PORT", "10000"))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+
 def main():
-
     if not TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
-        raise RuntimeError("TELEGRAM_BOT_TOKEN not found")
+    threading.Thread(
+        target=run_health_server,
+        daemon=True
+    ).start()
 
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("products", products))
+    app.add_handler(CommandHandler("search", search))
+    app.add_handler(CommandHandler("order", order))
+    app.add_handler(CommandHandler("track", track))
+    app.add_handler(CommandHandler("support", support))
 
     app.add_handler(
-
-        MessageHandler(filters.TEXT & ~filters.COMMAND, message)
-
+        MessageHandler(filters.TEXT & ~filters.COMMAND, messages)
     )
 
-    app.run_polling()
+    print("Katoni 530 bot started")
+
+    app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
+    main()
