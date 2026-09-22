@@ -118,7 +118,7 @@ def run_health_server():
     server.serve_forever()
 
 
-def main():
+    def main():
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
@@ -135,7 +135,7 @@ def main():
     app.add_handler(CommandHandler("order", order))
     app.add_handler(CommandHandler("track", track))
     app.add_handler(CommandHandler("support", support))
-
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, messages)
     )
@@ -145,5 +145,5 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 
-if __name__ == "__main__":
+  if __name__ == "__main__":
     main()
