@@ -1,7 +1,12 @@
-
 import os
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -13,10 +18,11 @@ from telegram.ext import (
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 CHANNEL_LINK = "https://t.me/katooni_530"
+SUPPORT_LINK = "https://t.me/katoni_530"
 
 MENU = [
-    ["👟 کفش مردانه", "👟 کفش زنانه"],
-    ["💰 استعلام قیمت", "📣 کانال تلگرام"],
+    ["👟 کفش مردانه ۴۱ تا ۴۵", "👟 کفش زنانه ۳۷ تا ۴۰"],
+    ["💬 استعلام قیمت و موجودی", "📣 کانال تلگرام"],
 ]
 
 keyboard = ReplyKeyboardMarkup(
@@ -26,56 +32,111 @@ keyboard = ReplyKeyboardMarkup(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "سلام 👋\n\n"
-        "👟 به فروشگاه کتونی 530 خوش آمدید\n\n"
+        "به فروشگاه کتونی 530 خوش آمدید 👟\n\n"
         "دسته‌بندی موردنظر را انتخاب کنید:",
         reply_markup=keyboard
     )
 
 
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     text = update.message.text
 
-    if text == "👟 کفش مردانه":
+    if text == "👟 کفش مردانه ۴۱ تا ۴۵":
+
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "👟 مشاهده مدل‌های مردانه",
+                    url=CHANNEL_LINK
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💬 استعلام قیمت و موجودی",
+                    url=SUPPORT_LINK
+                )
+            ]
+        ]
+
         await update.message.reply_text(
-            "👟 کفش مردانه\n\n"
-            "لطفاً کد کفش موردنظر را ارسال کنید.\n"
-            "مثال: K530-05"
+            "👟 کفش مردانه\n"
+            "سایزهای ۴۱ تا ۴۵\n\n"
+            "برای مشاهده مدل‌ها وارد کانال شوید 👇",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    elif text == "👟 کفش زنانه":
+    elif text == "👟 کفش زنانه ۳۷ تا ۴۰":
+
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "👟 مشاهده مدل‌های زنانه",
+                    url=CHANNEL_LINK
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💬 استعلام قیمت و موجودی",
+                    url=SUPPORT_LINK
+                )
+            ]
+        ]
+
         await update.message.reply_text(
-            "👟 کفش زنانه\n\n"
-            "لطفاً کد کفش موردنظر را ارسال کنید."
+            "👟 کفش زنانه\n"
+            "سایزهای ۳۷ تا ۴۰\n\n"
+            "برای مشاهده مدل‌ها وارد کانال شوید 👇",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    elif text == "💰 استعلام قیمت":
+    elif text == "💬 استعلام قیمت و موجودی":
+
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "💬 پیام به فروشگاه",
+                    url=SUPPORT_LINK
+                )
+            ]
+        ]
+
         await update.message.reply_text(
-            "💰 برای استعلام قیمت، کد کفش را ارسال کنید."
+            "برای استعلام قیمت و موجودی 👇\n\n"
+            "عکس مدل موردنظر را برای ما ارسال کنید.",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
 
     elif text == "📣 کانال تلگرام":
-        await update.message.reply_text(
-            "📣 کانال رسمی کتونی 530\n\n"
-            + CHANNEL_LINK
-        )
 
-    else:
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "📣 ورود به کانال کتونی 530",
+                    url=CHANNEL_LINK
+                )
+            ]
+        ]
+
         await update.message.reply_text(
-            "✅ کد دریافت شد:\n\n"
-            f"{text}\n\n"
-            "برای بررسی قیمت و موجودی، پیام شما ثبت شد."
+            "📣 کانال رسمی کتونی 530",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
 
 
 def main():
+
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(
+        CommandHandler("start", start)
+    )
 
     app.add_handler(
         MessageHandler(
@@ -86,7 +147,9 @@ def main():
 
     print("Katoni 530 bot started")
 
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
