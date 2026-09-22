@@ -1,6 +1,11 @@
 import os
 
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,11 +17,12 @@ from telegram.ext import (
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 CHANNEL = "@katooni_530"
+CHANNEL_LINK = "https://t.me/katooni_530"
 
 MENU = [
     ["👟 محصولات", "🔎 جستجو با کد"],
     ["🛒 ثبت سفارش", "📦 پیگیری سفارش"],
-    ["👨‍💬 پشتیبانی", "📢 کانال تلگرام"],
+    ["👨‍💬 پشتیبانی", "📣 کانال تلگرام"],
 ]
 
 keyboard = ReplyKeyboardMarkup(
@@ -25,7 +31,46 @@ keyboard = ReplyKeyboardMarkup(
 )
 
 
+async def is_member(context, user_id):
+    try:
+        member = await context.bot.get_chat_member(
+            CHANNEL,
+            user_id
+        )
+        return member.status in [
+            "member",
+            "administrator",
+            "creator",
+        ]
+    except Exception:
+        return False
+
+
+async def ask_to_join(update):
+    buttons = [
+        [
+            InlineKeyboardButton(
+                "📣 عضویت در کانال کتونی 530",
+                url=CHANNEL_LINK
+            )
+        ]
+    ]
+
+    await update.message.reply_text(
+        "👋 برای استفاده از ربات، ابتدا عضو کانال کتونی 530 شوید.\n\n"
+        "بعد از عضویت دوباره /start را بزنید.",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+
+    if not await is_member(context, user_id):
+        await ask_to_join(update)
+        return
+
     await update.message.reply_text(
         "سلام 👋\n\n"
         "به فروشگاه کتونی 530 خوش آمدید 👟\n\n"
@@ -35,23 +80,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     buttons = [
         [
             InlineKeyboardButton(
-                "📢 مشاهده محصولات در کانال",
-                url="https://t.me/katooni_530"
+                "📣 مشاهده مدل‌های جدید",
+                url=CHANNEL_LINK
             )
         ]
     ]
 
     await update.message.reply_text(
         "👟 محصولات جدید کتونی 530\n\n"
-        "برای دیدن مدل‌های موجود وارد کانال شوید 👇",
+        "برای مشاهده مدل‌های موجود وارد کانال شوید 👇",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "🔎 کد کفش را ارسال کنید.\n\n"
         "مثال:\nK530-05"
@@ -59,43 +106,48 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "🛒 ثبت سفارش\n\n"
-        "لطفاً کد کفش، سایز و شماره تماس خود را ارسال کنید."
+        "کد کفش + سایز + شماره تماس خود را ارسال کنید."
     )
 
 
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "📦 پیگیری سفارش\n\n"
-        "لطفاً شماره سفارش خود را ارسال کنید."
+        "شماره سفارش خود را ارسال کنید."
     )
 
 
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "👨‍💬 پشتیبانی کتونی 530\n\n"
-        "پیام خود را همینجا ارسال کنید."
+        "پیام خود را ارسال کنید تا فروشگاه بررسی کند."
     )
 
 
 async def channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     buttons = [
         [
             InlineKeyboardButton(
-                "📢 ورود به کانال کتونی 530",
-                url="https://t.me/katooni_530"
+                "📣 ورود به کانال کتونی 530",
+                url=CHANNEL_LINK
             )
         ]
     ]
 
     await update.message.reply_text(
-        "برای مشاهده مدل‌های جدید وارد کانال شوید 👇",
+        "📣 کانال رسمی کتونی 530",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     text = update.message.text.strip()
 
     if text == "👟 محصولات":
@@ -113,20 +165,23 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "👨‍💬 پشتیبانی":
         await support(update, context)
 
-    elif text == "📢 کانال تلگرام":
+    elif text == "📣 کانال تلگرام":
         await channel(update, context)
 
     else:
         await update.message.reply_text(
-            "✅ پیام شما دریافت شد.\n\n"
-            "برای انتخاب بخش موردنظر از دکمه‌های پایین استفاده کنید.",
-            reply_markup=keyboard,
+            "🔎 کد دریافت شد:\n\n"
+            f"{text}\n\n"
+            "برای بررسی این مدل با فروشگاه در ارتباط باشید."
         )
 
 
 def main():
+
     if not TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is not set"
+        )
 
     app = Application.builder().token(TOKEN).build()
 
@@ -138,12 +193,17 @@ def main():
     app.add_handler(CommandHandler("support", support))
 
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, messages)
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            messages
+        )
     )
 
     print("Katoni 530 bot started")
 
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
