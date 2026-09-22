@@ -1,7 +1,6 @@
 import os
-import requests
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -11,17 +10,19 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WC_URL = os.getenv("WC_URL", "").rstrip("/")
-WC_CONSUMER_KEY = os.getenv("WC_CONSUMER_KEY")
-WC_CONSUMER_SECRET = os.getenv("WC_CONSUMER_SECRET")
+
+CHANNEL = "@katooni_530"
 
 MENU = [
     ["👟 محصولات", "🔎 جستجو با کد"],
     ["🛒 ثبت سفارش", "📦 پیگیری سفارش"],
-    ["👨‍💬 پشتیبانی", "🌐 سایت فروشگاه"],
+    ["👨‍💬 پشتیبانی", "📢 کانال تلگرام"],
 ]
 
-keyboard = ReplyKeyboardMarkup(MENU, resize_keyboard=True)
+keyboard = ReplyKeyboardMarkup(
+    MENU,
+    resize_keyboard=True
+)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -34,104 +35,63 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        [
+            InlineKeyboardButton(
+                "📢 مشاهده محصولات در کانال",
+                url="https://t.me/katooni_530"
+            )
+        ]
+    ]
+
     await update.message.reply_text(
-        "👟 برای پیدا کردن کفش، روی «🔎 جستجو با کد» بزنید."
+        "👟 محصولات جدید کتونی 530\n\n"
+        "برای دیدن مدل‌های موجود وارد کانال شوید 👇",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["waiting_for_code"] = True
-
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔎 کد کفش را ارسال کنید.\n\n"
         "مثال:\nK530-05"
     )
 
 
-async def find_product(update: Update, code: str):
-    try:
-        url = f"{WC_URL}/wp-json/wc/v3/products"
-
-        response = requests.get(
-            url,
-            params={
-                "sku": code,
-                "consumer_key": WC_CONSUMER_KEY,
-                "consumer_secret": WC_CONSUMER_SECRET,
-            },
-            timeout=15,
-        )
-
-        response.raise_for_status()
-        products = response.json()
-
-        if not products:
-            await update.message.reply_text(
-                f"❌ محصولی با کد {code} پیدا نشد."
-            )
-            return
-
-        product = products[0]
-
-        name = product.get("name", "بدون نام")
-        price = product.get("price") or "نامشخص"
-        stock = product.get("stock_status", "")
-        permalink = product.get("permalink", WC_URL)
-
-        stock_text = (
-            "✅ موجود"
-            if stock == "instock"
-            else "❌ ناموجود"
-        )
-
-        message = (
-            f"👟 {name}\n\n"
-            f"🔎 کد: {code}\n"
-            f"💰 قیمت: {price} تومان\n"
-            f"📦 وضعیت: {stock_text}\n\n"
-            f"🛒 مشاهده و خرید:\n{permalink}"
-        )
-
-        images = product.get("images", [])
-
-        if images and images[0].get("src"):
-            await update.message.reply_photo(
-                photo=images[0]["src"],
-                caption=message,
-            )
-        else:
-            await update.message.reply_text(message)
-
-    except Exception as e:
-        print("WooCommerce error:", e)
-
-        await update.message.reply_text(
-            "⚠️ ارتباط با سایت برقرار نشد.\n"
-            "لطفاً دوباره امتحان کنید."
-        )
-
-
 async def order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🛒 برای ثبت سفارش، ابتدا محصول موردنظر را با کد جستجو کنید."
+        "🛒 ثبت سفارش\n\n"
+        "لطفاً کد کفش، سایز و شماره تماس خود را ارسال کنید."
     )
 
 
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📦 شماره سفارش خود را ارسال کنید."
+        "📦 پیگیری سفارش\n\n"
+        "لطفاً شماره سفارش خود را ارسال کنید."
     )
 
 
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👨‍💬 پشتیبانی فروشگاه کتونی 530"
+        "👨‍💬 پشتیبانی کتونی 530\n\n"
+        "پیام خود را همینجا ارسال کنید."
     )
 
 
-async def website(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        [
+            InlineKeyboardButton(
+                "📢 ورود به کانال کتونی 530",
+                url="https://t.me/katooni_530"
+            )
+        ]
+    ]
+
     await update.message.reply_text(
-        "🌐 سایت فروشگاه:\nhttps://katoni530.com"
+        "برای مشاهده مدل‌های جدید وارد کانال شوید 👇",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -142,7 +102,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await products(update, context)
 
     elif text == "🔎 جستجو با کد":
-        await search_command(update, context)
+        await search(update, context)
 
     elif text == "🛒 ثبت سفارش":
         await order(update, context)
@@ -153,17 +113,13 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "👨‍💬 پشتیبانی":
         await support(update, context)
 
-    elif text == "🌐 سایت فروشگاه":
-        await website(update, context)
-
-    elif context.user_data.get("waiting_for_code"):
-        context.user_data["waiting_for_code"] = False
-        await update.message.reply_text("⏳ در حال جستجوی محصول...")
-        await find_product(update, text)
+    elif text == "📢 کانال تلگرام":
+        await channel(update, context)
 
     else:
         await update.message.reply_text(
-            "لطفاً یکی از گزینه‌های منو را انتخاب کنید.",
+            "✅ پیام شما دریافت شد.\n\n"
+            "برای انتخاب بخش موردنظر از دکمه‌های پایین استفاده کنید.",
             reply_markup=keyboard,
         )
 
@@ -176,7 +132,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("products", products))
-    app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("search", search))
     app.add_handler(CommandHandler("order", order))
     app.add_handler(CommandHandler("track", track))
     app.add_handler(CommandHandler("support", support))
@@ -186,6 +142,7 @@ def main():
     )
 
     print("Katoni 530 bot started")
+
     app.run_polling(drop_pending_updates=True)
 
 
