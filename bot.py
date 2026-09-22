@@ -1,7 +1,4 @@
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -41,7 +38,7 @@ async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔎 کد کفش را ارسال کنید.\n\n"
-        "مثال:\nK530-05"
+        "مثال: K530-05"
     )
 
 
@@ -78,22 +75,16 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "👟 محصولات":
         await products(update, context)
-
     elif text == "🔎 جستجو با کد":
         await search(update, context)
-
     elif text == "🛒 ثبت سفارش":
         await order(update, context)
-
     elif text == "📦 پیگیری سفارش":
         await track(update, context)
-
     elif text == "👨‍💬 پشتیبانی":
         await support(update, context)
-
     elif text == "🌐 سایت فروشگاه":
         await website(update, context)
-
     else:
         await update.message.reply_text(
             f"🔎 کد دریافت شد:\n{text}\n\n"
@@ -101,31 +92,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"Katoni 530 bot is running")
-
-    def log_message(self, format, *args):
-        return
-
-
-def run_health_server():
-    port = int(os.getenv("PORT", "10000"))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
-
-
-   def main(): 
+def main():
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
-
-    threading.Thread(
-        target=run_health_server,
-        daemon=True
-    ).start()
 
     app = Application.builder().token(TOKEN).build()
 
@@ -135,15 +104,14 @@ def run_health_server():
     app.add_handler(CommandHandler("order", order))
     app.add_handler(CommandHandler("track", track))
     app.add_handler(CommandHandler("support", support))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post))
+
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, messages)
     )
 
     print("Katoni 530 bot started")
-
     app.run_polling(drop_pending_updates=True)
 
 
-  if __name__ == "__main__":
+if __name__ == "__main__":
     main()
