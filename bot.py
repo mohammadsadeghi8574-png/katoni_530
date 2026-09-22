@@ -118,7 +118,7 @@ def run_health_server():
     server.serve_forever()
 
 
-def main():
+   def main(): 
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
