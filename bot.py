@@ -26,7 +26,7 @@ from telegram.ext import (
 
 
 # =========================================================
-# تنظیمات اصلی
+# تنظیمات
 # =========================================================
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -38,19 +38,18 @@ PORT = int(os.getenv("PORT", "8080"))
 
 CHANNEL = "@katooni_530"
 CHANNEL_LINK = "https://t.me/katooni_530"
-
 BOT_USERNAME = "katoni_530_bot"
 
 ZIBAL_REQUEST_URL = "https://gateway.zibal.ir/v1/request"
 ZIBAL_VERIFY_URL = "https://gateway.zibal.ir/v1/verify"
 ZIBAL_START_URL = "https://gateway.zibal.ir/start/"
 
+DB_FILE = "orders.db"
+
 
 # =========================================================
-# محصولات
-#
-# قیمت‌ها فقط تومان هستند.
-# دلار فعلاً کاملاً حذف شده است.
+# محصولات اصلی
+# برای اضافه کردن محصول جدید بعداً از همین ساختار استفاده می‌کنیم
 # =========================================================
 
 PRODUCTS = {
@@ -58,20 +57,48 @@ PRODUCTS = {
         "name": "New Balance 530 🤎",
         "category": "women",
         "price": 7_250_000,
-        "sizes": ["37", "38", "39", "40"],
-
-        # فعلاً عکس را بعداً به این محصول متصل می‌کنیم.
+        "sizes": {
+            "37": 4,
+            "38": 4,
+            "39": 4,
+            "40": 0,
+        },
         "photo": None,
-    },
+    }
 }
 
 
 # =========================================================
-# دیتابیس سفارش‌ها
+# ابزارهای عمومی
 # =========================================================
 
-DB_FILE = "orders.db"
+def money(value):
+    return f"{int(value):,}"
 
+
+def normalize_code(value):
+    value = str(value).strip()
+
+    if value.isdigit():
+        return value.zfill(3)
+
+    return value.upper()
+
+
+def is_admin(user_id):
+    if not ADMIN_CHAT_ID:
+        return False
+
+    return str(user_id) == str(ADMIN_CHAT_ID)
+
+
+def clear_mode(context):
+    context.user_data.clear()
+
+
+# =========================================================
+# دیتابیس
+# =========================================================
 
 def db_connection():
     conn = sqlite3.connect(DB_FILE, timeout=30)
@@ -99,14 +126,270 @@ def init_db():
             track_id TEXT UNIQUE,
             ref_number TEXT,
             status TEXT NOT NULL DEFAULT 'waiting_payment',
+            stock_reduced INTEGER NOT NULL DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             paid_at DATETIME
         )
     """)
 
+    # اگر دیتابیس قدیمی باشد و ستون stock_reduced نداشته باشد
+    try:
+        cur.execute("""
+            ALTER TABLE orders
+            ADD COLUMN stock_reduced INTEGER NOT NULL DEFAULT 0
+        """)
+    except sqlite3.OperationalError:
+        pass
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS inventory (
+            product_code TEXT NOT NULL,
+            size TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (product_code, size)
+        )
+    """)
+
+    # فقط اگر سایز هنوز در دیتابیس وجود ندارد،
+    # موجودی اولیه وارد شود.
+    for code, product in PRODUCTS.items():
+        for size, quantity in product["sizes"].items():
+            cur.execute("""
+                INSERT OR IGNORE INTO inventory
+                (product_code, size, quantity)
+                VALUES (?, ?, ?)
+            """, (
+                code,
+                size,
+                quantity,
+            ))
+
     conn.commit()
     conn.close()
 
+
+# =========================================================
+# موجودی
+# =========================================================
+
+def get_inventory(code):
+    conn = db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT size, quantity
+        FROM inventory
+        WHERE product_code = ?
+        ORDER BY CAST(size AS INTEGER)
+    """, (code,))
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return {
+        str(row["size"]): int(row["quantity"])
+        for row in rows
+    }
+
+
+def get_stock(code, size):
+    conn = db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT quantity
+        FROM inventory
+        WHERE product_code = ?
+        AND size = ?
+    """, (
+        code,
+        str(size),
+    ))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return 0
+
+    return int(row["quantity"])
+
+
+def change_stock(code, size, amount):
+    conn = db_connection()
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT quantity
+            FROM inventory
+            WHERE product_code = ?
+            AND size = ?
+        """, (
+            code,
+            str(size),
+        ))
+
+        row = cur.fetchone()
+
+        if not row:
+            if amount > 0:
+                cur.execute("""
+                    INSERT INTO inventory
+                    (product_code, size, quantity)
+                    VALUES (?, ?, ?)
+                """, (
+                    code,
+                    str(size),
+                    amount,
+                ))
+
+                conn.commit()
+                return amount
+
+            return 0
+
+        current = int(row["quantity"])
+        new_quantity = max(0, current + amount)
+
+        cur.execute("""
+            UPDATE inventory
+            SET quantity = ?
+            WHERE product_code = ?
+            AND size = ?
+        """, (
+            new_quantity,
+            code,
+            str(size),
+        ))
+
+        conn.commit()
+        return new_quantity
+
+    finally:
+        conn.close()
+
+
+def add_size(code, size):
+    conn = db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT OR IGNORE INTO inventory
+        (product_code, size, quantity)
+        VALUES (?, ?, 0)
+    """, (
+        code,
+        str(size),
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def remove_size(code, size):
+    conn = db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        DELETE FROM inventory
+        WHERE product_code = ?
+        AND size = ?
+    """, (
+        code,
+        str(size),
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def reduce_stock_after_payment(order_id):
+    """
+    فقط یک بار بعد از پرداخت موفق موجودی کم می‌شود.
+    """
+
+    conn = db_connection()
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute("BEGIN IMMEDIATE")
+
+        cur.execute("""
+            SELECT *
+            FROM orders
+            WHERE id = ?
+        """, (order_id,))
+
+        order = cur.fetchone()
+
+        if not order:
+            conn.rollback()
+            return False
+
+        if int(order["stock_reduced"] or 0) == 1:
+            conn.rollback()
+            return True
+
+        cur.execute("""
+            SELECT quantity
+            FROM inventory
+            WHERE product_code = ?
+            AND size = ?
+        """, (
+            order["product_code"],
+            order["size"],
+        ))
+
+        stock_row = cur.fetchone()
+
+        if not stock_row:
+            conn.rollback()
+            return False
+
+        current_stock = int(stock_row["quantity"])
+
+        if current_stock <= 0:
+            conn.rollback()
+            return False
+
+        cur.execute("""
+            UPDATE inventory
+            SET quantity = quantity - 1
+            WHERE product_code = ?
+            AND size = ?
+            AND quantity > 0
+        """, (
+            order["product_code"],
+            order["size"],
+        ))
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False
+
+        cur.execute("""
+            UPDATE orders
+            SET stock_reduced = 1
+            WHERE id = ?
+        """, (order_id,))
+
+        conn.commit()
+        return True
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+# =========================================================
+# سفارش‌ها
+# =========================================================
 
 def create_order(
     telegram_user_id,
@@ -119,7 +402,6 @@ def create_order(
     mobile,
     address,
 ):
-    # زیبال مبلغ را به ریال دریافت می‌کند.
     amount_rial = int(amount_toman) * 10
 
     conn = db_connection()
@@ -165,13 +447,13 @@ def get_order(order_id):
     conn = db_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        "SELECT * FROM orders WHERE id = ?",
-        (order_id,)
-    )
+    cur.execute("""
+        SELECT *
+        FROM orders
+        WHERE id = ?
+    """, (order_id,))
 
     row = cur.fetchone()
-
     conn.close()
 
     return row
@@ -181,33 +463,33 @@ def get_order_by_track_id(track_id):
     conn = db_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        "SELECT * FROM orders WHERE track_id = ?",
-        (str(track_id),)
-    )
+    cur.execute("""
+        SELECT *
+        FROM orders
+        WHERE track_id = ?
+    """, (str(track_id),))
 
     row = cur.fetchone()
-
     conn.close()
 
     return row
 
 
-def get_user_order(order_id, telegram_user_id):
+def get_user_order(order_id, user_id):
     conn = db_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT * FROM orders
+        SELECT *
+        FROM orders
         WHERE id = ?
         AND telegram_user_id = ?
     """, (
         order_id,
-        telegram_user_id,
+        user_id,
     ))
 
     row = cur.fetchone()
-
     conn.close()
 
     return row
@@ -217,13 +499,14 @@ def set_track_id(order_id, track_id):
     conn = db_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        "UPDATE orders SET track_id = ? WHERE id = ?",
-        (
-            str(track_id),
-            order_id,
-        )
-    )
+    cur.execute("""
+        UPDATE orders
+        SET track_id = ?
+        WHERE id = ?
+    """, (
+        str(track_id),
+        order_id,
+    ))
 
     conn.commit()
     conn.close()
@@ -264,41 +547,27 @@ def mark_order_failed(order_id):
 
 
 # =========================================================
-# ابزارها
+# منوها
 # =========================================================
 
-def money(value):
-    return f"{int(value):,}"
+def main_keyboard(user_id=None):
+    buttons = [
+        ["🔥 جدیدترین مدل‌ها"],
+        ["👟 کفش زنانه", "👟 کفش مردانه"],
+        ["🔎 جستجو با کد محصول"],
+        ["🛒 ثبت سفارش", "📦 پیگیری سفارش"],
+        ["💰 قیمت و موجودی", "📏 راهنمای سایز"],
+        ["💳 پرداخت و مشکلات پرداخت"],
+        ["👨‍💬 پشتیبانی", "📣 کانال تلگرام"],
+    ]
 
+    if user_id and is_admin(user_id):
+        buttons.append(
+            ["🔐 مدیریت فروشگاه"]
+        )
 
-def normalize_code(value):
-    value = value.strip()
-
-    if value.isdigit():
-        return value.zfill(3)
-
-    return value.upper()
-
-
-def clear_mode(context):
-    context.user_data.clear()
-
-
-# =========================================================
-# منوی اصلی
-# =========================================================
-
-def main_keyboard():
     return ReplyKeyboardMarkup(
-        [
-            ["🔥 جدیدترین مدل‌ها"],
-            ["👟 کفش زنانه", "👟 کفش مردانه"],
-            ["🔎 جستجو با کد محصول"],
-            ["🛒 ثبت سفارش", "📦 پیگیری سفارش"],
-            ["💰 قیمت و موجودی", "📏 راهنمای سایز"],
-            ["💳 پرداخت و مشکلات پرداخت"],
-            ["👨‍💬 پشتیبانی", "📣 کانال تلگرام"],
-        ],
+        buttons,
         resize_keyboard=True,
     )
 
@@ -345,33 +614,28 @@ async def is_member(bot, user_id):
 
     except Exception as e:
         print("Membership error:", e)
-
-        # در صورت خطای موقت تلگرام مشتری قفل نشود.
         return True
 
 
 async def show_join_message(update):
-    keyboard = InlineKeyboardMarkup(
+    keyboard = InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "📣 عضویت در کانال",
-                    url=CHANNEL_LINK,
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ عضو شدم",
-                    callback_data="check_membership",
-                )
-            ],
-        ]
-    )
+            InlineKeyboardButton(
+                "📣 عضویت در کانال",
+                url=CHANNEL_LINK,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "✅ عضو شدم",
+                callback_data="check_membership",
+            )
+        ],
+    ])
 
     await update.effective_message.reply_text(
         "سلام 👋\n\n"
-        "برای استفاده از فروشگاه کتونی 530 "
-        "ابتدا عضو کانال شوید 👇\n\n"
+        "برای استفاده از فروشگاه کتونی 530 ابتدا عضو کانال شوید 👇\n\n"
         "بعد از عضویت روی «✅ عضو شدم» بزنید.",
         reply_markup=keyboard,
     )
@@ -383,43 +647,54 @@ async def show_join_message(update):
 
 async def send_product(message, code):
     code = normalize_code(code)
-
     product = PRODUCTS.get(code)
 
     if not product:
         await message.reply_text(
             "❌ محصولی با این کد پیدا نشد.\n\n"
-            "کد محصول را دوباره بررسی کنید.\n"
-            "مثال: 005"
+            "مثال کد محصول: 005"
         )
         return
 
-    sizes_text = " - ".join(product["sizes"])
+    inventory = get_inventory(code)
+
+    available_sizes = [
+        size
+        for size, qty in inventory.items()
+        if qty > 0
+    ]
+
+    if available_sizes:
+        sizes_text = " - ".join(available_sizes)
+        availability_text = f"📏 سایزهای موجود: {sizes_text}"
+        button_text = "🛒 خرید این مدل"
+        callback = f"buy:{code}"
+    else:
+        availability_text = "❌ این مدل فعلاً ناموجود است."
+        button_text = "❌ ناموجود"
+        callback = f"soldout:{code}"
 
     caption = (
         f"👟 {product['name']}\n\n"
         f"🏷 کد محصول: {code}\n"
-        f"📏 سایزهای موجود: {sizes_text}\n"
-        f"💰 قیمت: {money(product['price'])} تومان\n\n"
-        "برای خرید روی دکمه زیر بزنید 👇"
+        f"{availability_text}\n"
+        f"💰 قیمت: {money(product['price'])} تومان"
     )
 
-    keyboard = InlineKeyboardMarkup(
+    keyboard = InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "🛒 خرید این مدل",
-                    callback_data=f"buy:{code}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "📣 مشاهده کانال",
-                    url=CHANNEL_LINK,
-                )
-            ],
-        ]
-    )
+            InlineKeyboardButton(
+                button_text,
+                callback_data=callback,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📣 کانال کتونی 530",
+                url=CHANNEL_LINK,
+            )
+        ],
+    ])
 
     if product.get("photo"):
         try:
@@ -429,7 +704,6 @@ async def send_product(message, code):
                 reply_markup=keyboard,
             )
             return
-
         except Exception as e:
             print("Photo error:", e)
 
@@ -439,17 +713,23 @@ async def send_product(message, code):
     )
 
 
+async def show_latest_products(message):
+    await message.reply_text(
+        "🔥 جدیدترین مدل‌های کتونی 530\n\n"
+        "مدل موردنظر را انتخاب کنید 👇"
+    )
+
+    for code in PRODUCTS:
+        await send_product(message, code)
+
+
 async def show_products_by_category(message, category):
     found = False
 
     for code, product in PRODUCTS.items():
         if product["category"] == category:
             found = True
-
-            await send_product(
-                message,
-                code
-            )
+            await send_product(message, code)
 
     if not found:
         await message.reply_text(
@@ -457,29 +737,101 @@ async def show_products_by_category(message, category):
         )
 
 
-async def show_latest_products(message):
+# =========================================================
+# پنل مدیریت موجودی
+# =========================================================
+
+async def show_admin_products(message):
+    buttons = []
+
+    for code, product in PRODUCTS.items():
+        buttons.append([
+            InlineKeyboardButton(
+                f"👟 {code} | {product['name']}",
+                callback_data=f"admin_product:{code}",
+            )
+        ])
+
     await message.reply_text(
-        "🔥 جدیدترین مدل‌های کتونی 530\n\n"
-        "مدل موردنظر را انتخاب کنید 👇"
+        "🔐 مدیریت فروشگاه\n\n"
+        "محصول موردنظر را انتخاب کنید 👇",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
-    # فعلاً همه محصولات ثبت‌شده را نمایش می‌دهیم.
-    for code in PRODUCTS:
-        await send_product(
-            message,
-            code
+
+async def show_admin_inventory(message, code):
+    product = PRODUCTS.get(code)
+
+    if not product:
+        await message.reply_text(
+            "❌ محصول پیدا نشد."
         )
+        return
+
+    inventory = get_inventory(code)
+
+    text = (
+        f"📦 مدیریت موجودی\n\n"
+        f"👟 {product['name']}\n"
+        f"🏷 کد: {code}\n\n"
+    )
+
+    buttons = []
+
+    for size, qty in inventory.items():
+
+        status = (
+            f"{qty} جفت"
+            if qty > 0
+            else "ناموجود"
+        )
+
+        text += (
+            f"📏 سایز {size}: {status}\n"
+        )
+
+        buttons.append([
+            InlineKeyboardButton(
+                "➖",
+                callback_data=f"stock_minus:{code}:{size}",
+            ),
+            InlineKeyboardButton(
+                f"سایز {size} | {qty}",
+                callback_data="nothing",
+            ),
+            InlineKeyboardButton(
+                "➕",
+                callback_data=f"stock_plus:{code}:{size}",
+            ),
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "➕ افزودن سایز",
+            callback_data=f"add_size:{code}",
+        ),
+        InlineKeyboardButton(
+            "🗑 حذف سایز",
+            callback_data=f"remove_size:{code}",
+        ),
+    ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ محصولات",
+            callback_data="admin_products",
+        )
+    ])
+
+    await message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 # =========================================================
 # START
-#
-# /start
-#
-# یا خرید مستقیم:
-# /start 005
-#
-# لینک:
+# لینک مستقیم:
 # https://t.me/katoni_530_bot?start=005
 # =========================================================
 
@@ -491,58 +843,44 @@ async def start(
 
     user_id = update.effective_user.id
 
-    if not await is_member(
-        context.bot,
-        user_id
-    ):
-        # اگر مشتری از لینک محصول آمده باشد،
-        # کد را نگه می‌داریم تا بعد از عضویت محصول باز شود.
+    if not await is_member(context.bot, user_id):
+
         if context.args:
-            context.user_data[
-                "pending_product"
-            ] = normalize_code(
+            context.user_data["pending_product"] = normalize_code(
                 context.args[0]
             )
 
         await show_join_message(update)
         return
 
-    # اگر مشتری از لینک مستقیم محصول آمده است
     if context.args:
-        code = normalize_code(
-            context.args[0]
-        )
+        code = normalize_code(context.args[0])
 
         if code in PRODUCTS:
             await update.message.reply_text(
                 "👋 به فروشگاه کتونی 530 خوش آمدید.\n\n"
-                "محصولی که انتخاب کردید 👇",
-                reply_markup=main_keyboard(),
+                "محصول انتخابی شما 👇",
+                reply_markup=main_keyboard(user_id),
             )
 
             await send_product(
                 update.message,
                 code
             )
-
             return
 
-    # ورود معمولی به ربات
     await update.message.reply_text(
         "سلام 👋\n\n"
         "👟 به فروشگاه کتونی 530 خوش آمدید\n\n"
-        "🔥 جدیدترین مدل‌ها را همین پایین ببینید 👇",
-        reply_markup=main_keyboard(),
+        "🔥 جدیدترین مدل‌ها را ببینید 👇",
+        reply_markup=main_keyboard(user_id),
     )
 
-    # ویترین از همان استارت
-    await show_latest_products(
-        update.message
-    )
+    await show_latest_products(update.message)
 
 
 # =========================================================
-# دکمه‌های ربات
+# Callback buttons
 # =========================================================
 
 async def button_handler(
@@ -550,55 +888,38 @@ async def button_handler(
     context: ContextTypes.DEFAULT_TYPE
 ):
     query = update.callback_query
-
     await query.answer()
 
     data = query.data
+    user_id = query.from_user.id
 
-    # -------------------------------------
-    # تأیید عضویت
-    # -------------------------------------
+    # -----------------------------------------------------
+    # عضویت
+    # -----------------------------------------------------
 
     if data == "check_membership":
 
-        if not await is_member(
-            context.bot,
-            query.from_user.id
-        ):
+        if not await is_member(context.bot, user_id):
             await query.message.reply_text(
-                "❌ هنوز عضویت شما تأیید نشده است.\n\n"
-                "ابتدا عضو کانال شوید و دوباره "
-                "روی «✅ عضو شدم» بزنید."
+                "❌ هنوز عضویت شما تأیید نشده است."
             )
-
             return
 
         await query.message.reply_text(
-            "✅ عضویت شما تأیید شد.\n\n"
-            "به فروشگاه کتونی 530 خوش آمدید 👟",
-            reply_markup=main_keyboard(),
+            "✅ عضویت شما تأیید شد.",
+            reply_markup=main_keyboard(user_id),
         )
 
-        pending_product = (
-            context.user_data.get(
-                "pending_product"
-            )
+        pending = context.user_data.pop(
+            "pending_product",
+            None
         )
 
-        if (
-            pending_product
-            and pending_product in PRODUCTS
-        ):
-            context.user_data.pop(
-                "pending_product",
-                None
-            )
-
+        if pending and pending in PRODUCTS:
             await send_product(
                 query.message,
-                pending_product
+                pending
             )
-
         else:
             await show_latest_products(
                 query.message
@@ -606,72 +927,25 @@ async def button_handler(
 
         return
 
-    # -------------------------------------
-    # خرید
-    # -------------------------------------
+    # -----------------------------------------------------
+    # ناموجود
+    # -----------------------------------------------------
+
+    if data.startswith("soldout:"):
+        await query.answer(
+            "این مدل فعلاً ناموجود است.",
+            show_alert=True,
+        )
+        return
+
+    # -----------------------------------------------------
+    # انتخاب خرید
+    # -----------------------------------------------------
 
     if data.startswith("buy:"):
-
         code = normalize_code(
             data.split(":", 1)[1]
         )
-
-        product = PRODUCTS.get(code)
-
-        if not product:
-            await query.message.reply_text(
-                "❌ این محصول پیدا نشد."
-            )
-            return
-
-        buttons = []
-        row = []
-
-        for size in product["sizes"]:
-            row.append(
-                InlineKeyboardButton(
-                    f"سایز {size}",
-                    callback_data=(
-                        f"size:{code}:{size}"
-                    ),
-                )
-            )
-
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-
-        if row:
-            buttons.append(row)
-
-        await query.message.reply_text(
-            f"👟 {product['name']}\n"
-            f"🏷 کد: {code}\n"
-            f"💰 قیمت: {money(product['price'])} تومان\n\n"
-            "📏 سایز موردنظر را انتخاب کنید:",
-            reply_markup=InlineKeyboardMarkup(
-                buttons
-            ),
-        )
-
-        return
-
-    # -------------------------------------
-    # انتخاب سایز
-    # -------------------------------------
-
-    if data.startswith("size:"):
-
-        parts = data.split(":")
-
-        if len(parts) != 3:
-            return
-
-        code = normalize_code(
-            parts[1]
-        )
-
-        size = parts[2]
 
         product = PRODUCTS.get(code)
 
@@ -681,9 +955,60 @@ async def button_handler(
             )
             return
 
-        if size not in product["sizes"]:
+        inventory = get_inventory(code)
+
+        buttons = []
+
+        for size, qty in inventory.items():
+
+            if qty <= 0:
+                continue
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"سایز {size}",
+                    callback_data=f"size:{code}:{size}",
+                )
+            ])
+
+        if not buttons:
             await query.message.reply_text(
-                "❌ این سایز موجود نیست."
+                "❌ متأسفانه موجودی این مدل تمام شده است."
+            )
+            return
+
+        await query.message.reply_text(
+            f"👟 {product['name']}\n"
+            f"🏷 کد: {code}\n"
+            f"💰 قیمت: {money(product['price'])} تومان\n\n"
+            "📏 سایز موردنظر را انتخاب کنید:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # انتخاب سایز
+    # -----------------------------------------------------
+
+    if data.startswith("size:"):
+        _, code, size = data.split(":", 2)
+
+        code = normalize_code(code)
+        product = PRODUCTS.get(code)
+
+        if not product:
+            await query.message.reply_text(
+                "❌ محصول پیدا نشد."
+            )
+            return
+
+        stock = get_stock(code, size)
+
+        if stock <= 0:
+            await query.answer(
+                "❌ این سایز تمام شده است.",
+                show_alert=True,
             )
             return
 
@@ -700,46 +1025,210 @@ async def button_handler(
             f"🏷 کد: {code}\n"
             f"📏 سایز: {size}\n"
             f"💰 مبلغ: {money(product['price'])} تومان\n\n"
-            "👤 لطفاً نام و نام خانوادگی خود را بفرستید:",
+            "👤 نام و نام خانوادگی خود را بفرستید:",
             reply_markup=cancel_keyboard(),
+        )
+
+        return
+
+    # =====================================================
+    # مدیریت فروشگاه
+    # =====================================================
+
+    if data == "nothing":
+        return
+
+    if data == "admin_products":
+
+        if not is_admin(user_id):
+            await query.answer(
+                "⛔ دسترسی ندارید.",
+                show_alert=True,
+            )
+            return
+
+        await show_admin_products(
+            query.message
+        )
+        return
+
+    if data.startswith("admin_product:"):
+
+        if not is_admin(user_id):
+            await query.answer(
+                "⛔ دسترسی ندارید.",
+                show_alert=True,
+            )
+            return
+
+        code = normalize_code(
+            data.split(":", 1)[1]
+        )
+
+        await show_admin_inventory(
+            query.message,
+            code
+        )
+        return
+
+    # -----------------------------------------------------
+    # زیاد کردن موجودی
+    # -----------------------------------------------------
+
+    if data.startswith("stock_plus:"):
+
+        if not is_admin(user_id):
+            await query.answer(
+                "⛔ دسترسی ندارید.",
+                show_alert=True,
+            )
+            return
+
+        _, code, size = data.split(":", 2)
+
+        new_qty = change_stock(
+            code,
+            size,
+            1
+        )
+
+        await query.answer(
+            f"✅ سایز {size}: {new_qty} جفت"
+        )
+
+        await show_admin_inventory(
+            query.message,
+            code
+        )
+        return
+
+    # -----------------------------------------------------
+    # کم کردن موجودی
+    # -----------------------------------------------------
+
+    if data.startswith("stock_minus:"):
+
+        if not is_admin(user_id):
+            await query.answer(
+                "⛔ دسترسی ندارید.",
+                show_alert=True,
+            )
+            return
+
+        _, code, size = data.split(":", 2)
+
+        new_qty = change_stock(
+            code,
+            size,
+            -1
+        )
+
+        await query.answer(
+            f"✅ سایز {size}: {new_qty} جفت"
+        )
+
+        await show_admin_inventory(
+            query.message,
+            code
+        )
+        return
+
+    # -----------------------------------------------------
+    # افزودن سایز
+    # -----------------------------------------------------
+
+    if data.startswith("add_size:"):
+
+        if not is_admin(user_id):
+            return
+
+        code = normalize_code(
+            data.split(":", 1)[1]
+        )
+
+        clear_mode(context)
+
+        context.user_data["admin_add_size"] = True
+        context.user_data["admin_product_code"] = code
+
+        await query.message.reply_text(
+            f"➕ افزودن سایز به محصول {code}\n\n"
+            "شماره سایز جدید را بفرستید.\n"
+            "مثال: 40",
+            reply_markup=cancel_keyboard(),
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # حذف سایز
+    # -----------------------------------------------------
+
+    if data.startswith("remove_size:"):
+
+        if not is_admin(user_id):
+            return
+
+        code = normalize_code(
+            data.split(":", 1)[1]
+        )
+
+        inventory = get_inventory(code)
+
+        buttons = []
+
+        for size in inventory:
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🗑 حذف سایز {size}",
+                    callback_data=f"delete_size:{code}:{size}",
+                )
+            ])
+
+        await query.message.reply_text(
+            "سایزی که می‌خواهید حذف شود را انتخاب کنید:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+        return
+
+    if data.startswith("delete_size:"):
+
+        if not is_admin(user_id):
+            return
+
+        _, code, size = data.split(":", 2)
+
+        remove_size(code, size)
+
+        await query.answer(
+            f"سایز {size} حذف شد ✅"
+        )
+
+        await show_admin_inventory(
+            query.message,
+            code
         )
 
         return
 
 
 # =========================================================
-# درخواست پرداخت زیبال
+# زیبال
 # =========================================================
 
 def create_zibal_payment(order):
     if not ZIBAL_MERCHANT:
-        raise Exception(
-            "ZIBAL_MERCHANT تنظیم نشده است."
-        )
+        raise Exception("ZIBAL_MERCHANT تنظیم نشده است.")
 
     if not PUBLIC_URL:
-        raise Exception(
-            "PUBLIC_URL تنظیم نشده است."
-        )
-
-    callback_url = (
-        f"{PUBLIC_URL}/zibal/callback"
-    )
+        raise Exception("PUBLIC_URL تنظیم نشده است.")
 
     payload = {
         "merchant": ZIBAL_MERCHANT,
-
-        # مبلغ ذخیره‌شده به ریال
-        "amount": int(
-            order["amount_rial"]
-        ),
-
-        "callbackUrl": callback_url,
-
-        "description": (
-            f"Katoni 530 Order #{order['id']}"
-        ),
-
+        "amount": int(order["amount_rial"]),
+        "callbackUrl": f"{PUBLIC_URL}/zibal/callback",
+        "description": f"Katoni 530 Order #{order['id']}",
         "mobile": order["mobile"],
     }
 
@@ -753,49 +1242,28 @@ def create_zibal_payment(order):
 
     data = response.json()
 
-    print(
-        "Zibal request:",
-        data
-    )
-
-    if int(
-        data.get("result", 0)
-    ) != 100:
+    if int(data.get("result", 0)) != 100:
         raise Exception(
-            data.get(
-                "message",
-                "Zibal payment error"
-            )
+            data.get("message", "Zibal payment error")
         )
 
     track_id = str(
-        data.get(
-            "trackId",
-            ""
-        )
+        data.get("trackId", "")
     )
 
     if not track_id:
-        raise Exception(
-            "Zibal trackId دریافت نشد."
-        )
+        raise Exception("trackId دریافت نشد.")
 
     return track_id
 
 
-# =========================================================
-# تأیید پرداخت
-# =========================================================
-
 def verify_zibal(track_id):
-    payload = {
-        "merchant": ZIBAL_MERCHANT,
-        "trackId": int(track_id),
-    }
-
     response = requests.post(
         ZIBAL_VERIFY_URL,
-        json=payload,
+        json={
+            "merchant": ZIBAL_MERCHANT,
+            "trackId": int(track_id),
+        },
         timeout=20,
     )
 
@@ -805,46 +1273,36 @@ def verify_zibal(track_id):
 
 
 # =========================================================
-# ارسال پیام تلگرام از Callback
+# پیام بعد از پرداخت
 # =========================================================
 
-def send_telegram_sync(
-    chat_id,
-    text
-):
+def send_telegram_sync(chat_id, text):
     if not TOKEN:
         return
 
     async def sender():
-        bot = Bot(
-            token=TOKEN
-        )
+        bot = Bot(token=TOKEN)
 
         try:
             await bot.send_message(
                 chat_id=int(chat_id),
                 text=text,
             )
-
         finally:
             await bot.shutdown()
 
     try:
-        asyncio.run(
-            sender()
-        )
-
+        asyncio.run(sender())
     except Exception as e:
-        print(
-            "Telegram callback error:",
-            e
-        )
+        print("Telegram callback error:", e)
 
 
-def notify_paid_order(
-    order,
-    ref_number
-):
+def notify_paid_order(order, ref_number):
+    remaining = get_stock(
+        order["product_code"],
+        order["size"]
+    )
+
     customer_text = (
         "🎉 پرداخت با موفقیت تأیید شد\n\n"
         f"🧾 شماره سفارش: {order['id']}\n"
@@ -864,10 +1322,9 @@ def notify_paid_order(
     )
 
     if ADMIN_CHAT_ID:
-
         admin_text = (
             "🔔 سفارش جدید پرداخت شد\n\n"
-            f"🧾 شماره سفارش: #{order['id']}\n"
+            f"🧾 سفارش: #{order['id']}\n"
             f"👟 محصول: {order['product_name']}\n"
             f"🏷 کد: {order['product_code']}\n"
             f"📏 سایز: {order['size']}\n"
@@ -875,6 +1332,7 @@ def notify_paid_order(
             f"👤 مشتری: {order['customer_name']}\n"
             f"📱 موبایل: {order['mobile']}\n"
             f"📍 آدرس: {order['address']}\n\n"
+            f"📦 موجودی باقی‌مانده سایز {order['size']}: {remaining} جفت\n"
             f"🔐 پیگیری پرداخت: {ref_number}"
         )
 
@@ -885,164 +1343,67 @@ def notify_paid_order(
 
 
 # =========================================================
-# سرور Callback پرداخت
+# Callback پرداخت
 # =========================================================
 
-class PaymentCallbackHandler(
-    BaseHTTPRequestHandler
-):
+class PaymentCallbackHandler(BaseHTTPRequestHandler):
 
-    def log_message(
-        self,
-        format,
-        *args
-    ):
-        print(
-            "HTTP:",
-            format % args
-        )
+    def log_message(self, format, *args):
+        print("HTTP:", format % args)
 
-    def send_html(
-        self,
-        title,
-        message
-    ):
+    def send_html(self, title, message):
         page = f"""
         <!doctype html>
-
         <html lang="fa" dir="rtl">
-
         <head>
-
             <meta charset="utf-8">
-
-            <meta
-                name="viewport"
-                content="width=device-width, initial-scale=1"
-            >
-
-            <title>
-                {html.escape(title)}
-            </title>
-
-            <style>
-
-                body {{
-                    font-family: sans-serif;
-                    background: #f5f5f5;
-                    margin: 0;
-                    padding: 30px 15px;
-                    text-align: center;
-                }}
-
-                .box {{
-                    max-width: 500px;
-                    margin: auto;
-                    background: white;
-                    border-radius: 20px;
-                    padding: 30px 20px;
-                    box-shadow:
-                        0 4px 20px
-                        rgba(0,0,0,.08);
-                }}
-
-                p {{
-                    line-height: 2;
-                }}
-
-            </style>
-
+            <meta name="viewport"
+                  content="width=device-width, initial-scale=1">
+            <title>{html.escape(title)}</title>
         </head>
-
-        <body>
-
-            <div class="box">
-
-                <h2>
-                    {html.escape(title)}
-                </h2>
-
-                <p>
-                    {html.escape(message)}
-                </p>
-
-                <p>
-                    می‌توانید این صفحه را ببندید
-                    و به تلگرام برگردید.
-                </p>
-
-                <strong>
-                    👟 کتونی 530
-                </strong>
-
-            </div>
-
+        <body style="font-family:sans-serif;text-align:center;padding:40px">
+            <h2>{html.escape(title)}</h2>
+            <p>{html.escape(message)}</p>
+            <p>می‌توانید به تلگرام برگردید.</p>
+            <strong>👟 کتونی 530</strong>
         </body>
-
         </html>
         """
 
-        body = page.encode(
-            "utf-8"
-        )
+        body = page.encode("utf-8")
 
         self.send_response(200)
-
         self.send_header(
             "Content-Type",
-            "text/html; charset=utf-8",
+            "text/html; charset=utf-8"
         )
-
         self.send_header(
             "Content-Length",
-            str(len(body)),
+            str(len(body))
         )
-
         self.end_headers()
-
-        self.wfile.write(
-            body
-        )
+        self.wfile.write(body)
 
     def do_GET(self):
-        parsed = urlparse(
-            self.path
-        )
+        parsed = urlparse(self.path)
 
-        # صفحه اصلی Railway
         if parsed.path == "/":
-
             self.send_html(
                 "کتونی 530",
                 "ربات و درگاه پرداخت فعال است."
             )
-
             return
 
         if parsed.path != "/zibal/callback":
-
-            self.send_response(
-                404
-            )
-
+            self.send_response(404)
             self.end_headers()
-
             return
 
-        params = parse_qs(
-            parsed.query
-        )
+        params = parse_qs(parsed.query)
 
         track_id = (
-            params.get(
-                "trackId",
-                [""]
-            )[0]
-            or
-            params.get(
-                "trackid",
-                [""]
-            )[0]
+            params.get("trackId", [""])[0]
+            or params.get("trackid", [""])[0]
         )
 
         success = params.get(
@@ -1051,116 +1412,108 @@ class PaymentCallbackHandler(
         )[0]
 
         if not track_id:
-
             self.send_html(
                 "خطا",
                 "شناسه پرداخت دریافت نشد."
             )
-
             return
 
-        order = get_order_by_track_id(
-            track_id
-        )
+        order = get_order_by_track_id(track_id)
 
         if not order:
-
             self.send_html(
                 "خطا",
-                "سفارش مربوط به این پرداخت پیدا نشد."
+                "سفارش پیدا نشد."
             )
-
             return
 
         if order["status"] == "paid":
-
             self.send_html(
                 "پرداخت تأیید شده است ✅",
-                (
-                    f"سفارش شماره "
-                    f"{order['id']} "
-                    f"قبلاً ثبت نهایی شده است."
-                )
+                f"سفارش {order['id']} قبلاً ثبت شده است."
             )
-
             return
 
         if success != "1":
-
-            mark_order_failed(
-                order["id"]
-            )
+            mark_order_failed(order["id"])
 
             send_telegram_sync(
                 order["telegram_chat_id"],
-                "❌ پرداخت انجام نشد یا لغو شد.\n\n"
+                "❌ پرداخت انجام نشد یا لغو شد.\n"
                 "سفارش نهایی ثبت نشده است."
             )
 
             self.send_html(
                 "پرداخت ناموفق بود ❌",
-                "سفارش شما نهایی نشده است."
+                "سفارش نهایی نشده است."
             )
-
             return
 
         try:
-
-            verify_data = verify_zibal(
-                track_id
-            )
-
-            print(
-                "Zibal verify:",
-                verify_data
-            )
+            verify_data = verify_zibal(track_id)
 
             result = int(
-                verify_data.get(
-                    "result",
-                    0
-                )
+                verify_data.get("result", 0)
             )
 
-            if result not in (
-                100,
-                201
-            ):
-
+            if result not in (100, 201):
                 self.send_html(
                     "پرداخت تأیید نشد ❌",
-                    "تأیید نهایی پرداخت از زیبال دریافت نشد."
+                    "تأیید نهایی از درگاه دریافت نشد."
                 )
-
                 return
 
-            # بررسی مبلغ برای امنیت بیشتر
-            verified_amount = (
-                verify_data.get(
-                    "amount"
-                )
-            )
+            verified_amount = verify_data.get("amount")
 
             if verified_amount is not None:
-
-                verified_amount = int(
-                    verified_amount
-                )
-
-                if verified_amount != int(
+                if int(verified_amount) != int(
                     order["amount_rial"]
                 ):
-
-                    print(
-                        "SECURITY: amount mismatch"
-                    )
-
                     self.send_html(
-                        "خطا در مبلغ پرداخت",
-                        "مبلغ پرداخت با مبلغ سفارش مطابقت ندارد."
+                        "خطا در مبلغ",
+                        "مبلغ پرداخت با سفارش مطابقت ندارد."
+                    )
+                    return
+
+            # اول موجودی را کم می‌کنیم.
+            stock_ok = reduce_stock_after_payment(
+                order["id"]
+            )
+
+            if not stock_ok:
+                # پرداخت تأیید شده، پس آن را گم نمی‌کنیم.
+                # ادمین باید این سفارش را بررسی کند.
+                mark_order_paid(
+                    order["id"],
+                    str(
+                        verify_data.get(
+                            "refNumber",
+                            track_id
+                        )
+                    )
+                )
+
+                if ADMIN_CHAT_ID:
+                    send_telegram_sync(
+                        ADMIN_CHAT_ID,
+                        "⚠️ هشدار مهم\n\n"
+                        f"پرداخت سفارش #{order['id']} تأیید شده "
+                        "اما موجودی سایز هنگام ثبت نهایی صفر بوده است.\n"
+                        "لطفاً سفارش را دستی بررسی کنید."
                     )
 
-                    return
+                send_telegram_sync(
+                    order["telegram_chat_id"],
+                    "✅ پرداخت شما تأیید شده است.\n\n"
+                    "سفارش شما نیاز به بررسی موجودی دارد و "
+                    "پشتیبانی کتونی 530 آن را بررسی می‌کند."
+                )
+
+                self.send_html(
+                    "پرداخت موفق بود ✅",
+                    "پرداخت تأیید شد و سفارش در حال بررسی است."
+                )
+                return
 
             ref_number = str(
                 verify_data.get(
@@ -1175,9 +1528,7 @@ class PaymentCallbackHandler(
                 ref_number
             )
 
-            order = get_order(
-                order["id"]
-            )
+            order = get_order(order["id"])
 
             notify_paid_order(
                 order,
@@ -1186,220 +1537,184 @@ class PaymentCallbackHandler(
 
             self.send_html(
                 "پرداخت موفق بود ✅",
-                (
-                    f"سفارش شماره "
-                    f"{order['id']} "
-                    f"با موفقیت ثبت شد."
-                )
+                f"سفارش شماره {order['id']} ثبت شد."
             )
 
         except Exception as e:
-
-            print(
-                "VERIFY ERROR:",
-                e
-            )
+            print("VERIFY ERROR:", e)
 
             self.send_html(
                 "خطا در بررسی پرداخت",
-                (
-                    "اگر مبلغ از حساب شما کسر شده، "
-                    "دوباره پرداخت نکنید و با پشتیبانی تماس بگیرید."
-                )
+                "اگر مبلغ از حساب شما کسر شده، دوباره پرداخت نکنید."
             )
 
 
 def start_http_server():
     server = ThreadingHTTPServer(
-        (
-            "0.0.0.0",
-            PORT
-        ),
+        ("0.0.0.0", PORT),
         PaymentCallbackHandler
     )
 
-    print(
-        f"HTTP server running on port {PORT}"
-    )
-
+    print(f"HTTP server running on port {PORT}")
     server.serve_forever()
 
 
 # =========================================================
-# ارسال پیام مشتری به پشتیبانی
+# پشتیبانی
 # =========================================================
 
-async def send_support_to_admin(
-    update,
-    context
-):
+async def send_support_to_admin(update, context):
     if not ADMIN_CHAT_ID:
-
         await update.message.reply_text(
-            "❌ پشتیبانی در حال حاضر در دسترس نیست.",
-            reply_markup=main_keyboard(),
+            "❌ پشتیبانی در دسترس نیست.",
+            reply_markup=main_keyboard(
+                update.effective_user.id
+            ),
         )
-
         clear_mode(context)
-
         return
 
     user = update.effective_user
 
     header = (
         "📩 پیام جدید مشتری\n\n"
-        f"👤 نام تلگرام: {user.full_name}\n"
-        f"🆔 Telegram ID: {user.id}\n"
+        f"👤 {user.full_name}\n"
+        f"🆔 {user.id}\n"
     )
 
     if user.username:
-        header += (
-            f"🔗 @{user.username}\n"
-        )
+        header += f"🔗 @{user.username}\n"
 
-    header += (
-        "\n👇 پیام مشتری:"
-    )
+    header += "\n👇 پیام مشتری:"
 
     try:
-
         await context.bot.send_message(
-            chat_id=int(
-                ADMIN_CHAT_ID
-            ),
+            chat_id=int(ADMIN_CHAT_ID),
             text=header,
         )
 
         await update.message.copy(
-            chat_id=int(
-                ADMIN_CHAT_ID
-            )
+            chat_id=int(ADMIN_CHAT_ID)
         )
 
         clear_mode(context)
 
         await update.message.reply_text(
-            "✅ پیام شما برای پشتیبانی ارسال شد.\n\n"
-            "همکاران کتونی 530 پیام شما را بررسی می‌کنند.",
+            "✅ پیام شما برای پشتیبانی ارسال شد.",
             reply_markup=support_keyboard(),
         )
 
     except Exception as e:
-
-        print(
-            "Support error:",
-            e
-        )
+        print("Support error:", e)
 
         await update.message.reply_text(
-            "❌ ارسال پیام انجام نشد. لطفاً دوباره امتحان کنید.",
-            reply_markup=support_keyboard(),
+            "❌ ارسال پیام انجام نشد."
         )
 
 
 # =========================================================
-# پیام‌های متنی
+# پیام متنی
 # =========================================================
 
 async def text_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    if (
-        not update.message
-        or not update.message.text
-    ):
+    if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
+    user_id = update.effective_user.id
 
-    if not await is_member(
-        context.bot,
-        update.effective_user.id
-    ):
-        await show_join_message(
-            update
-        )
-
+    if not await is_member(context.bot, user_id):
+        await show_join_message(update)
         return
 
-    # -------------------------------------
-    # خانه
-    # -------------------------------------
+    # -----------------------------------------------------
+    # خانه و لغو
+    # -----------------------------------------------------
 
     if text == "🏠 بازگشت به منوی اصلی":
-
         clear_mode(context)
 
         await update.message.reply_text(
             "🏠 منوی اصلی کتونی 530",
-            reply_markup=main_keyboard(),
+            reply_markup=main_keyboard(user_id),
         )
-
         return
 
-    # -------------------------------------
-    # لغو
-    # -------------------------------------
-
     if text == "❌ لغو عملیات":
-
         clear_mode(context)
 
         await update.message.reply_text(
-            "✅ عملیات لغو شد.\n\n"
-            "به منوی اصلی برگشتید.",
-            reply_markup=main_keyboard(),
+            "✅ عملیات لغو شد.",
+            reply_markup=main_keyboard(user_id),
+        )
+        return
+
+    # =====================================================
+    # افزودن سایز توسط مدیر
+    # =====================================================
+
+    if context.user_data.get("admin_add_size"):
+
+        if not is_admin(user_id):
+            clear_mode(context)
+            return
+
+        size = text.strip()
+
+        if not size.isdigit():
+            await update.message.reply_text(
+                "❌ فقط شماره سایز را بفرستید.\n"
+                "مثال: 40"
+            )
+            return
+
+        code = context.user_data["admin_product_code"]
+
+        add_size(code, size)
+        clear_mode(context)
+
+        await update.message.reply_text(
+            f"✅ سایز {size} به محصول {code} اضافه شد.\n"
+            "موجودی اولیه آن صفر است."
         )
 
+        await show_admin_inventory(
+            update.message,
+            code
+        )
         return
 
     # =====================================================
     # مراحل سفارش
     # =====================================================
 
-    if context.user_data.get(
-        "ordering"
-    ):
+    if context.user_data.get("ordering"):
 
-        step = context.user_data.get(
-            "step"
-        )
+        step = context.user_data.get("step")
 
-        # نام مشتری
         if step == "name":
-
             if len(text) < 2:
-
                 await update.message.reply_text(
-                    "لطفاً نام و نام خانوادگی خود را وارد کنید."
+                    "لطفاً نام و نام خانوادگی را وارد کنید."
                 )
-
                 return
 
-            context.user_data[
-                "customer_name"
-            ] = text
-
-            context.user_data[
-                "step"
-            ] = "mobile"
+            context.user_data["customer_name"] = text
+            context.user_data["step"] = "mobile"
 
             await update.message.reply_text(
-                "📱 شماره موبایل خود را وارد کنید.\n\n"
-                "مثال:\n"
-                "09123456789",
+                "📱 شماره موبایل را وارد کنید.\n"
+                "مثال: 09123456789",
                 reply_markup=cancel_keyboard(),
             )
-
             return
 
-        # موبایل
         if step == "mobile":
-
             mobile = (
-                text
-                .replace(" ", "")
+                text.replace(" ", "")
                 .replace("-", "")
             )
 
@@ -1408,111 +1723,68 @@ async def text_handler(
                 or len(mobile) != 11
                 or not mobile.startswith("09")
             ):
-
                 await update.message.reply_text(
-                    "❌ شماره موبایل صحیح نیست.\n\n"
-                    "مثال صحیح:\n"
-                    "09123456789"
+                    "❌ شماره موبایل صحیح نیست.\n"
+                    "مثال: 09123456789"
                 )
-
                 return
 
-            context.user_data[
-                "mobile"
-            ] = mobile
-
-            context.user_data[
-                "step"
-            ] = "address"
+            context.user_data["mobile"] = mobile
+            context.user_data["step"] = "address"
 
             await update.message.reply_text(
-                "📍 لطفاً آدرس کامل برای ارسال را بنویسید:",
+                "📍 آدرس کامل برای ارسال را بنویسید:",
                 reply_markup=cancel_keyboard(),
             )
-
             return
 
-        # آدرس
         if step == "address":
-
             if len(text) < 5:
-
                 await update.message.reply_text(
                     "لطفاً آدرس کامل‌تری بنویسید."
                 )
-
                 return
 
-            context.user_data[
-                "address"
-            ] = text
+            context.user_data["address"] = text
 
-            code = context.user_data[
-                "product_code"
-            ]
+            code = context.user_data["product_code"]
+            size = context.user_data["size"]
 
-            size = context.user_data[
-                "size"
-            ]
-
-            product = PRODUCTS.get(
-                code
-            )
+            product = PRODUCTS.get(code)
 
             if not product:
+                clear_mode(context)
+                return
 
+            # قبل از ساخت درگاه دوباره موجودی چک می‌شود.
+            if get_stock(code, size) <= 0:
                 clear_mode(context)
 
                 await update.message.reply_text(
-                    "❌ محصول پیدا نشد.",
-                    reply_markup=main_keyboard(),
+                    "❌ متأسفانه این سایز همین الان ناموجود شده است.\n"
+                    "لطفاً سایز دیگری انتخاب کنید.",
+                    reply_markup=main_keyboard(user_id),
                 )
-
                 return
 
-            price = product["price"]
-
             try:
-
                 order_id = create_order(
-                    telegram_user_id=
-                        update.effective_user.id,
-
-                    telegram_chat_id=
-                        update.effective_chat.id,
-
+                    telegram_user_id=user_id,
+                    telegram_chat_id=update.effective_chat.id,
                     product_code=code,
-
-                    product_name=
-                        product["name"],
-
+                    product_name=product["name"],
                     size=size,
-
-                    amount_toman=price,
-
-                    customer_name=
-                        context.user_data[
-                            "customer_name"
-                        ],
-
-                    mobile=
-                        context.user_data[
-                            "mobile"
-                        ],
-
-                    address=
-                        context.user_data[
-                            "address"
-                        ],
+                    amount_toman=product["price"],
+                    customer_name=context.user_data[
+                        "customer_name"
+                    ],
+                    mobile=context.user_data["mobile"],
+                    address=context.user_data["address"],
                 )
 
-                order = get_order(
-                    order_id
-                )
+                order = get_order(order_id)
 
-                track_id = create_zibal_payment(
-                    order
-                )
+                track_id = create_zibal_payment(order)
 
                 set_track_id(
                     order_id,
@@ -1523,34 +1795,14 @@ async def text_handler(
                     f"{ZIBAL_START_URL}{track_id}"
                 )
 
-                keyboard = InlineKeyboardMarkup(
+                keyboard = InlineKeyboardMarkup([
                     [
-                        [
-                            InlineKeyboardButton(
-                                "💳 پرداخت آنلاین",
-                                url=payment_url,
-                            )
-                        ]
+                        InlineKeyboardButton(
+                            "💳 پرداخت آنلاین",
+                            url=payment_url,
+                        )
                     ]
-                )
-
-                customer_name = (
-                    context.user_data[
-                        "customer_name"
-                    ]
-                )
-
-                mobile = (
-                    context.user_data[
-                        "mobile"
-                    ]
-                )
-
-                address = (
-                    context.user_data[
-                        "address"
-                    ]
-                )
+                ])
 
                 await update.message.reply_text(
                     "🧾 فاکتور سفارش\n\n"
@@ -1558,265 +1810,189 @@ async def text_handler(
                     f"👟 محصول: {product['name']}\n"
                     f"🏷 کد: {code}\n"
                     f"📏 سایز: {size}\n"
-                    f"💰 مبلغ: {money(price)} تومان\n\n"
-                    f"👤 نام: {customer_name}\n"
-                    f"📱 موبایل: {mobile}\n"
-                    f"📍 آدرس: {address}\n\n"
-                    "⚠️ سفارش هنوز نهایی نشده است.\n\n"
-                    "برای ثبت نهایی، پرداخت را انجام دهید 👇",
+                    f"💰 مبلغ: {money(product['price'])} تومان\n\n"
+                    f"👤 نام: {context.user_data['customer_name']}\n"
+                    f"📱 موبایل: {context.user_data['mobile']}\n"
+                    f"📍 آدرس: {context.user_data['address']}\n\n"
+                    "⚠️ سفارش هنوز ثبت نهایی نشده است.\n"
+                    "بعد از پرداخت موفق ثبت نهایی می‌شود 👇",
                     reply_markup=keyboard,
                 )
 
                 clear_mode(context)
 
             except Exception as e:
-
-                print(
-                    "PAYMENT CREATE ERROR:",
-                    e
-                )
+                print("PAYMENT ERROR:", e)
 
                 clear_mode(context)
 
                 await update.message.reply_text(
-                    "❌ اتصال به درگاه پرداخت انجام نشد.\n\n"
-                    "هیچ مبلغی از حساب شما کسر نشده است.\n"
-                    "لطفاً دوباره امتحان کنید.",
-                    reply_markup=main_keyboard(),
+                    "❌ اتصال به درگاه انجام نشد.\n"
+                    "هیچ مبلغی از حساب شما کسر نشده است.",
+                    reply_markup=main_keyboard(user_id),
                 )
 
             return
 
     # =====================================================
-    # جستجوی محصول
+    # جستجو
     # =====================================================
 
-    if context.user_data.get(
-        "searching"
-    ):
-
+    if context.user_data.get("searching"):
         clear_mode(context)
 
         await send_product(
             update.message,
             normalize_code(text)
         )
-
         return
 
     # =====================================================
-    # پیگیری سفارش
+    # پیگیری
     # =====================================================
 
-    if context.user_data.get(
-        "tracking"
-    ):
+    if context.user_data.get("tracking"):
 
         try:
-            order_id = int(
-                text
-            )
-
+            order_id = int(text)
         except ValueError:
-
             await update.message.reply_text(
-                "❌ شماره سفارش باید عدد باشد.\n\n"
-                "مثال: 25",
-                reply_markup=cancel_keyboard(),
+                "❌ شماره سفارش باید عدد باشد."
             )
-
             return
 
         order = get_user_order(
             order_id,
-            update.effective_user.id
+            user_id
         )
 
         if not order:
-
             await update.message.reply_text(
-                "❌ سفارشی با این شماره برای شما پیدا نشد.",
-                reply_markup=cancel_keyboard(),
+                "❌ سفارشی با این شماره پیدا نشد."
             )
-
             return
 
-        status = order["status"]
+        status_map = {
+            "paid": "✅ پرداخت شده و ثبت نهایی شده",
+            "waiting_payment": "⏳ در انتظار پرداخت",
+            "payment_failed": "❌ پرداخت ناموفق یا لغو شده",
+        }
 
-        if status == "paid":
-            status_text = (
-                "✅ پرداخت شده و ثبت نهایی شده"
-            )
-
-        elif status == "waiting_payment":
-            status_text = (
-                "⏳ در انتظار پرداخت"
-            )
-
-        elif status == "payment_failed":
-            status_text = (
-                "❌ پرداخت ناموفق یا لغو شده"
-            )
-
-        else:
-            status_text = status
+        status_text = status_map.get(
+            order["status"],
+            order["status"]
+        )
 
         clear_mode(context)
 
         await update.message.reply_text(
             "📦 وضعیت سفارش\n\n"
-            f"🔢 شماره سفارش: {order['id']}\n"
-            f"👟 محصول: {order['product_name']}\n"
+            f"🔢 شماره: {order['id']}\n"
+            f"👟 {order['product_name']}\n"
             f"🏷 کد: {order['product_code']}\n"
             f"📏 سایز: {order['size']}\n"
-            f"💰 مبلغ: {money(order['amount_toman'])} تومان\n"
+            f"💰 {money(order['amount_toman'])} تومان\n"
             f"📌 وضعیت: {status_text}",
-            reply_markup=main_keyboard(),
+            reply_markup=main_keyboard(user_id),
         )
-
         return
 
     # =====================================================
-    # پیام پشتیبانی
+    # پشتیبانی فعال
     # =====================================================
 
-    if context.user_data.get(
-        "support_mode"
-    ):
-
+    if context.user_data.get("support_mode"):
         await send_support_to_admin(
             update,
             context
         )
-
         return
 
     # =====================================================
-    # منوی اصلی
+    # منو
     # =====================================================
 
     if text == "🔥 جدیدترین مدل‌ها":
-
-        await show_latest_products(
-            update.message
-        )
-
+        await show_latest_products(update.message)
         return
 
     if text == "👟 کفش زنانه":
-
         await show_products_by_category(
             update.message,
             "women"
         )
-
         return
 
     if text == "👟 کفش مردانه":
-
         await show_products_by_category(
             update.message,
             "men"
         )
-
         return
 
     if text == "🔎 جستجو با کد محصول":
-
         clear_mode(context)
-
-        context.user_data[
-            "searching"
-        ] = True
+        context.user_data["searching"] = True
 
         await update.message.reply_text(
-            "🔎 کد محصول را وارد کنید.\n\n"
-            "مثال:\n"
-            "005",
+            "🔎 کد محصول را وارد کنید.\n"
+            "مثال: 005",
             reply_markup=cancel_keyboard(),
         )
-
         return
 
     if text == "🛒 ثبت سفارش":
-
         await update.message.reply_text(
-            "🛒 برای ثبت سفارش ابتدا مدل کفش را انتخاب کنید.\n\n"
-            "می‌توانید از «🔥 جدیدترین مدل‌ها» استفاده کنید "
-            "یا کد محصول را جستجو کنید.",
-            reply_markup=main_keyboard(),
+            "🛒 ابتدا مدل کفش را انتخاب کنید.\n\n"
+            "از «🔥 جدیدترین مدل‌ها» یا جستجوی کد استفاده کنید.",
+            reply_markup=main_keyboard(user_id),
         )
-
         return
 
     if text == "📦 پیگیری سفارش":
-
         clear_mode(context)
-
-        context.user_data[
-            "tracking"
-        ] = True
+        context.user_data["tracking"] = True
 
         await update.message.reply_text(
-            "📦 شماره سفارش خود را وارد کنید:",
+            "📦 شماره سفارش را وارد کنید:",
             reply_markup=cancel_keyboard(),
         )
-
         return
 
     if text in [
         "💰 قیمت و موجودی",
         "💰 استعلام قیمت و موجودی",
     ]:
-
         clear_mode(context)
-
-        context.user_data[
-            "searching"
-        ] = True
+        context.user_data["searching"] = True
 
         await update.message.reply_text(
-            "💰 برای مشاهده قیمت و موجودی، "
-            "کد محصول را وارد کنید.\n\n"
+            "🏷 کد محصول را وارد کنید.\n"
             "مثال: 005",
             reply_markup=cancel_keyboard(),
         )
-
         return
 
     if text in [
         "📏 راهنمای سایز",
         "📏 راهنمای انتخاب سایز",
     ]:
-
         await update.message.reply_text(
-            "📏 راهنمای انتخاب سایز\n\n"
-            "سایزهای موجود هر مدل داخل مشخصات همان محصول نمایش داده می‌شود.\n\n"
-            "اگر بین دو سایز شک دارید، "
-            "از بخش پشتیبانی پیام بدهید.",
+            "📏 سایزهای موجود هر کفش داخل مشخصات همان مدل نمایش داده می‌شود.\n\n"
+            "اگر برای انتخاب سایز نیاز به راهنمایی دارید، با پشتیبانی در ارتباط باشید.",
             reply_markup=support_keyboard(),
         )
-
         return
 
     if text == "💳 پرداخت و مشکلات پرداخت":
-
         await update.message.reply_text(
-            "💳 پرداخت و مشکلات پرداخت\n\n"
-            "پرداخت سفارش‌ها از طریق درگاه امن انجام می‌شود.\n\n"
-            "⚠️ اگر مبلغ از حساب شما کسر شد ولی سفارش تأیید نشد، "
-            "دوباره پرداخت نکنید و از بخش «💳 مشکل پرداخت» پیام بدهید.",
+            "💳 پرداخت سفارش از طریق درگاه امن انجام می‌شود.\n\n"
+            "اگر مبلغ کسر شد ولی سفارش تأیید نشد، دوباره پرداخت نکنید و با پشتیبانی تماس بگیرید.",
             reply_markup=support_keyboard(),
         )
-
         return
 
-    # =====================================================
-    # پشتیبانی
-    # =====================================================
-
     if text == "👨‍💬 پشتیبانی":
-
         clear_mode(context)
 
         await update.message.reply_text(
@@ -1824,99 +2000,70 @@ async def text_handler(
             "موضوع موردنظر را انتخاب کنید 👇",
             reply_markup=support_keyboard(),
         )
-
         return
 
     if text == "🛍 راهنمای خرید":
-
         await update.message.reply_text(
             "🛍 راهنمای خرید\n\n"
-            "1️⃣ مدل کفش را انتخاب کنید.\n"
+            "1️⃣ مدل را انتخاب کنید.\n"
             "2️⃣ سایز را انتخاب کنید.\n"
-            "3️⃣ نام، موبایل و آدرس را وارد کنید.\n"
-            "4️⃣ فاکتور را بررسی کنید.\n"
-            "5️⃣ پرداخت آنلاین را انجام دهید.\n"
-            "6️⃣ بعد از تأیید پرداخت، سفارش ثبت نهایی می‌شود. ✅",
+            "3️⃣ مشخصات را وارد کنید.\n"
+            "4️⃣ پرداخت را انجام دهید.\n"
+            "5️⃣ بعد از پرداخت موفق، سفارش ثبت نهایی و موجودی همان سایز خودکار کم می‌شود. ✅",
             reply_markup=support_keyboard(),
         )
-
         return
 
-    if text == "💳 مشکل پرداخت":
-
+    if text in [
+        "💳 مشکل پرداخت",
+        "🔄 تعویض / مشکل سفارش",
+        "👨‍💼 ارتباط مستقیم با پشتیبان",
+    ]:
         clear_mode(context)
-
-        context.user_data[
-            "support_mode"
-        ] = True
+        context.user_data["support_mode"] = True
 
         await update.message.reply_text(
-            "💳 مشکل پرداخت\n\n"
-            "مشکل خود را همین‌جا بنویسید.\n\n"
-            "اگر شماره سفارش دارید، آن را هم ارسال کنید.\n\n"
-            "⚠️ شماره کارت، رمز یا اطلاعات محرمانه بانکی را ارسال نکنید.",
+            "👨‍💬 پیام خود را همین‌جا ارسال کنید.\n\n"
+            "پیام شما برای پشتیبانی کتونی 530 ارسال می‌شود.\n"
+            "⚠️ اطلاعات محرمانه بانکی ارسال نکنید.",
             reply_markup=cancel_keyboard(),
         )
-
-        return
-
-    if text == "🔄 تعویض / مشکل سفارش":
-
-        clear_mode(context)
-
-        context.user_data[
-            "support_mode"
-        ] = True
-
-        await update.message.reply_text(
-            "🔄 تعویض / مشکل سفارش\n\n"
-            "شماره سفارش و توضیح مشکل را برای ما ارسال کنید.",
-            reply_markup=cancel_keyboard(),
-        )
-
-        return
-
-    if text == "👨‍💼 ارتباط مستقیم با پشتیبان":
-
-        clear_mode(context)
-
-        context.user_data[
-            "support_mode"
-        ] = True
-
-        await update.message.reply_text(
-            "👨‍💼 ارتباط مستقیم با پشتیبان\n\n"
-            "پیام خود را همین‌جا ارسال کنید.\n\n"
-            "پیام شما مستقیماً برای پشتیبانی کتونی 530 ارسال می‌شود. ✅",
-            reply_markup=cancel_keyboard(),
-        )
-
         return
 
     if text == "📣 کانال تلگرام":
-
-        keyboard = InlineKeyboardMarkup(
-            [
+        await update.message.reply_text(
+            "📣 کانال رسمی کتونی 530 👇",
+            reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton(
-                        "📣 ورود به کانال کتونی 530",
+                        "📣 ورود به کانال",
                         url=CHANNEL_LINK,
                     )
                 ]
-            ]
+            ]),
         )
+        return
 
-        await update.message.reply_text(
-            "📣 کانال رسمی کتونی 530\n\n"
-            "جدیدترین مدل‌ها را در کانال ببینید 👇",
-            reply_markup=keyboard,
+    # =====================================================
+    # پنل ادمین
+    # =====================================================
+
+    if text == "🔐 مدیریت فروشگاه":
+
+        if not is_admin(user_id):
+            await update.message.reply_text(
+                "⛔ شما به این بخش دسترسی ندارید."
+            )
+            return
+
+        await show_admin_products(
+            update.message
         )
-
         return
 
     await update.message.reply_text(
         "لطفاً یکی از گزینه‌های منو را انتخاب کنید 👇",
-        reply_markup=main_keyboard(),
+        reply_markup=main_keyboard(user_id),
     )
 
 
@@ -1931,150 +2078,112 @@ async def media_handler(
     if not update.message:
         return
 
-    if not context.user_data.get(
-        "support_mode"
-    ):
+    if not context.user_data.get("support_mode"):
         await update.message.reply_text(
-            "برای ارسال عکس یا فایل ابتدا وارد بخش 👨‍💬 پشتیبانی شوید.",
-            reply_markup=main_keyboard(),
+            "برای ارسال عکس یا فایل ابتدا وارد بخش پشتیبانی شوید.",
+            reply_markup=main_keyboard(
+                update.effective_user.id
+            ),
         )
-
         return
 
     if not ADMIN_CHAT_ID:
-
-        await update.message.reply_text(
-            "❌ پشتیبانی در حال حاضر در دسترس نیست."
-        )
-
         return
 
     user = update.effective_user
 
     header = (
-        "📩 عکس/فایل جدید از مشتری\n\n"
+        "📩 عکس/فایل جدید مشتری\n\n"
         f"👤 {user.full_name}\n"
         f"🆔 {user.id}"
     )
 
     if user.username:
-        header += (
-            f"\n🔗 @{user.username}"
-        )
+        header += f"\n🔗 @{user.username}"
 
     try:
-
         await context.bot.send_message(
-            chat_id=int(
-                ADMIN_CHAT_ID
-            ),
+            chat_id=int(ADMIN_CHAT_ID),
             text=header,
         )
 
         await update.message.copy(
-            chat_id=int(
-                ADMIN_CHAT_ID
-            )
+            chat_id=int(ADMIN_CHAT_ID)
         )
 
         clear_mode(context)
 
         await update.message.reply_text(
-            "✅ پیام شما برای پشتیبانی ارسال شد.",
+            "✅ برای پشتیبانی ارسال شد.",
             reply_markup=support_keyboard(),
         )
 
     except Exception as e:
-
-        print(
-            "Media support error:",
-            e
-        )
-
-        await update.message.reply_text(
-            "❌ ارسال انجام نشد. دوباره امتحان کنید."
-        )
+        print("Media error:", e)
 
 
 # =========================================================
 # Commands
 # =========================================================
 
-async def products_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def products_command(update, context):
     clear_mode(context)
-
-    await show_latest_products(
-        update.message
-    )
+    await show_latest_products(update.message)
 
 
-async def search_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def search_command(update, context):
     clear_mode(context)
-
-    context.user_data[
-        "searching"
-    ] = True
+    context.user_data["searching"] = True
 
     await update.message.reply_text(
-        "🔎 کد محصول را ارسال کنید.\n"
-        "مثال: 005",
+        "🔎 کد محصول را بفرستید.\nمثال: 005",
         reply_markup=cancel_keyboard(),
     )
 
 
-async def order_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def order_command(update, context):
     clear_mode(context)
+    await show_latest_products(update.message)
+
+
+async def track_command(update, context):
+    clear_mode(context)
+    context.user_data["tracking"] = True
 
     await update.message.reply_text(
-        "🛒 ابتدا مدل موردنظر را انتخاب کنید.",
-        reply_markup=main_keyboard(),
-    )
-
-
-async def track_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    clear_mode(context)
-
-    context.user_data[
-        "tracking"
-    ] = True
-
-    await update.message.reply_text(
-        "📦 شماره سفارش خود را وارد کنید:",
+        "📦 شماره سفارش را وارد کنید:",
         reply_markup=cancel_keyboard(),
     )
 
 
-async def support_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def support_command(update, context):
     clear_mode(context)
 
     await update.message.reply_text(
-        "👨‍💬 مرکز پشتیبانی کتونی 530\n\n"
-        "موضوع موردنظر را انتخاب کنید 👇",
+        "👨‍💬 مرکز پشتیبانی کتونی 530",
         reply_markup=support_keyboard(),
     )
 
 
+async def admin_command(update, context):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "⛔ دسترسی ندارید."
+        )
+        return
+
+    clear_mode(context)
+
+    await show_admin_products(
+        update.message
+    )
+
+
 # =========================================================
-# اجرای برنامه
+# اجرا
 # =========================================================
 
 def main():
-
     if not TOKEN:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN تنظیم نشده است."
@@ -2092,7 +2201,6 @@ def main():
 
     init_db()
 
-    # سرور پرداخت Railway
     http_thread = threading.Thread(
         target=start_http_server,
         daemon=True,
@@ -2100,7 +2208,6 @@ def main():
 
     http_thread.start()
 
-    # ربات تلگرام
     app = (
         Application
         .builder()
@@ -2109,75 +2216,54 @@ def main():
     )
 
     app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     app.add_handler(
-        CommandHandler(
-            "products",
-            products_command
-        )
+        CommandHandler("products", products_command)
     )
 
     app.add_handler(
-        CommandHandler(
-            "search",
-            search_command
-        )
+        CommandHandler("search", search_command)
     )
 
     app.add_handler(
-        CommandHandler(
-            "order",
-            order_command
-        )
+        CommandHandler("order", order_command)
     )
 
     app.add_handler(
-        CommandHandler(
-            "track",
-            track_command
-        )
+        CommandHandler("track", track_command)
     )
 
     app.add_handler(
-        CommandHandler(
-            "support",
-            support_command
-        )
+        CommandHandler("support", support_command)
     )
 
     app.add_handler(
-        CallbackQueryHandler(
-            button_handler
+        CommandHandler("admin", admin_command)
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler,
         )
     )
 
     app.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            text_handler
+            filters.PHOTO
+            | filters.Document.ALL
+            | filters.VIDEO,
+            media_handler,
         )
     )
 
-    app.add_handler(
-        MessageHandler(
-            (
-                filters.PHOTO
-                | filters.Document.ALL
-                | filters.VIDEO
-            ),
-            media_handler
-        )
-    )
-
-    print(
-        "Katoni 530 bot started successfully"
-    )
+    print("Katoni 530 bot started successfully")
 
     app.run_polling(
         allowed_updates=Update.ALL_TYPES
