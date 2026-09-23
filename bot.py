@@ -1,4 +1,5 @@
 import os
+
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -11,6 +12,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
+    ConversationHandler,
     filters,
 )
 
@@ -23,30 +25,66 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL = "@katooni_530"
 CHANNEL_LINK = "https://t.me/katooni_530"
 
+# فعلاً نرخ دلار دستی است.
+# بعداً نرخ روز خودکار را وصل می‌کنیم.
+USD_TO_TOMAN = 110000
+
+
+# =========================
+# محصولات
+# بعداً مدل‌های واقعی خودتان را اینجا اضافه می‌کنیم
+# =========================
+
+PRODUCTS = {
+    "K530-05": {
+        "name": "کتونی مردانه مدل K530-05",
+        "category": "men",
+        "price_usd": 65,
+        "sizes": ["41", "42", "43", "44", "45"],
+    },
+    "K530-06": {
+        "name": "کتونی زنانه مدل K530-06",
+        "category": "women",
+        "price_usd": 55,
+        "sizes": ["37", "38", "39", "40"],
+    },
+}
+
+
+# =========================
+# مراحل ثبت سفارش
+# =========================
+
+SELECT_SIZE, GET_NAME, GET_PHONE, GET_ADDRESS = range(4)
+
+
 # =========================
 # منوی اصلی
 # =========================
 
-MAIN_MENU = ReplyKeyboardMarkup(
-    [
+def main_menu():
+    keyboard = [
         ["👟 کفش مردانه ۴۱ تا ۴۵", "👟 کفش زنانه ۳۷ تا ۴۰"],
         ["🔎 جستجو با کد محصول", "🛒 ثبت سفارش"],
         ["📦 پیگیری سفارش", "💬 استعلام قیمت و موجودی"],
         ["👨‍💬 پشتیبانی", "📣 کانال تلگرام"],
-    ],
-    resize_keyboard=True,
-)
+    ]
+
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+    )
 
 
 # =========================
-# بررسی عضویت در کانال
+# عضویت کانال
 # =========================
 
-async def is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+async def is_member(context, user_id):
     try:
         member = await context.bot.get_chat_member(
             chat_id=CHANNEL,
-            user_id=user_id
+            user_id=user_id,
         )
 
         return member.status in [
@@ -60,7 +98,7 @@ async def is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int):
         return False
 
 
-def join_buttons():
+def join_keyboard():
     return InlineKeyboardMarkup(
         [
             [
@@ -79,9 +117,9 @@ def join_buttons():
     )
 
 
-async def ask_to_join(update: Update):
+async def ask_to_join(update):
     text = (
-        "👋 سلام\n\n"
+        "سلام 👋\n\n"
         "برای استفاده از ربات کتونی 530 ابتدا عضو کانال شوید 👇\n\n"
         "بعد از عضویت روی «✅ عضو شدم» بزنید."
     )
@@ -89,14 +127,11 @@ async def ask_to_join(update: Update):
     if update.message:
         await update.message.reply_text(
             text,
-            reply_markup=join_buttons(),
+            reply_markup=join_keyboard(),
         )
 
 
-async def require_member(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def require_member(update, context):
     user_id = update.effective_user.id
 
     if await is_member(context, user_id):
@@ -106,181 +141,318 @@ async def require_member(
     return False
 
 
-# =========================
-# نمایش منوی اصلی
-# =========================
-
-async def show_menu(update: Update):
-    text = (
-        "👋 سلام\n\n"
-        "به فروشگاه کتونی 530 خوش آمدید 👟\n\n"
-        "دسته‌بندی موردنظر را انتخاب کنید:"
-    )
-
-    if update.message:
-        await update.message.reply_text(
-            text,
-            reply_markup=MAIN_MENU,
-        )
-
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(
-            text,
-            reply_markup=MAIN_MENU,
-        )
-
-
-# =========================
-# دستور START
-# =========================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not await require_member(update, context):
-        return
-
-    await show_menu(update)
-
-
-# =========================
-# دکمه عضو شدم
-# =========================
-
-async def check_join(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     user_id = query.from_user.id
 
     if await is_member(context, user_id):
-
-        await query.answer(
-            "✅ عضویت شما تأیید شد",
-            show_alert=True,
+        await query.message.reply_text(
+            "✅ عضویت شما تأیید شد.\n\n"
+            "به فروشگاه کتونی 530 خوش آمدید 👟",
+            reply_markup=main_menu(),
         )
-
-        await show_menu(update)
-
     else:
-
         await query.answer(
-            "❌ هنوز عضو کانال نشده‌اید.",
+            "هنوز عضو کانال نشده‌اید.",
             show_alert=True,
         )
 
 
 # =========================
-# محصولات
+# شروع
 # =========================
 
-async def products(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if not await require_member(update, context):
         return
 
     await update.message.reply_text(
-        "👟 محصولات کتونی 530\n\n"
-        "یکی از دسته‌بندی‌های مردانه یا زنانه را انتخاب کنید.",
-        reply_markup=MAIN_MENU,
+        "سلام 👋\n\n"
+        "به فروشگاه کتونی 530 خوش آمدید 👟\n\n"
+        "دسته‌بندی موردنظر را انتخاب کنید:",
+        reply_markup=main_menu(),
     )
 
 
-async def men(update: Update):
-    await update.message.reply_text(
-        "👟 کفش مردانه | سایز ۴۱ تا ۴۵\n\n"
-        "برای استعلام مدل موردنظر، کد کفش را ارسال کنید.\n\n"
-        "مثال:\n"
-        "K530-05"
+# =========================
+# قیمت
+# =========================
+
+def toman_price(price_usd):
+    return price_usd * USD_TO_TOMAN
+
+
+def format_price(price):
+    return f"{price:,}"
+
+
+# =========================
+# نمایش محصول
+# =========================
+
+async def show_product(message, code):
+
+    product = PRODUCTS.get(code.upper())
+
+    if not product:
+        await message.reply_text(
+            "❌ محصولی با این کد پیدا نشد."
+        )
+        return
+
+    price_toman = toman_price(product["price_usd"])
+
+    sizes = " - ".join(product["sizes"])
+
+    text = (
+        f"👟 {product['name']}\n\n"
+        f"🔖 کد محصول: {code}\n"
+        f"💵 قیمت پایه: {product['price_usd']} دلار\n"
+        f"💰 قیمت امروز: {format_price(price_toman)} تومان\n"
+        f"📏 سایزهای موجود: {sizes}\n\n"
+        "برای خرید روی دکمه زیر بزنید 👇"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛒 خرید این محصول",
+                    callback_data=f"buy:{code}",
+                )
+            ]
+        ]
+    )
+
+    await message.reply_text(
+        text,
+        reply_markup=keyboard,
     )
 
 
-async def women(update: Update):
-    await update.message.reply_text(
-        "👟 کفش زنانه | سایز ۳۷ تا ۴۰\n\n"
-        "برای استعلام مدل موردنظر، کد کفش را ارسال کنید.\n\n"
-        "مثال:\n"
-        "K530-05"
-    )
+# =========================
+# محصولات مردانه
+# =========================
+
+async def men_products(update, context):
+
+    if not await require_member(update, context):
+        return
+
+    found = False
+
+    for code, product in PRODUCTS.items():
+
+        if product["category"] == "men":
+            found = True
+            await show_product(update.message, code)
+
+    if not found:
+        await update.message.reply_text(
+            "فعلاً محصول مردانه ثبت نشده است."
+        )
+
+
+# =========================
+# محصولات زنانه
+# =========================
+
+async def women_products(update, context):
+
+    if not await require_member(update, context):
+        return
+
+    found = False
+
+    for code, product in PRODUCTS.items():
+
+        if product["category"] == "women":
+            found = True
+            await show_product(update.message, code)
+
+    if not found:
+        await update.message.reply_text(
+            "فعلاً محصول زنانه ثبت نشده است."
+        )
 
 
 # =========================
 # جستجوی محصول
 # =========================
 
-async def search_product(update: Update):
-    context_text = (
-        "🔎 جستجو با کد محصول\n\n"
-        "کد کفش موردنظر را ارسال کنید.\n\n"
+async def search_product(update, context):
+
+    if not await require_member(update, context):
+        return
+
+    context.user_data["waiting_for_code"] = True
+
+    await update.message.reply_text(
+        "🔎 کد محصول را ارسال کنید.\n\n"
         "مثال:\n"
         "K530-05"
     )
 
-    await update.message.reply_text(context_text)
-
 
 # =========================
-# ثبت سفارش
+# شروع خرید
 # =========================
 
-async def order(update: Update):
-    await update.message.reply_text(
-        "🛒 ثبت سفارش\n\n"
-        "برای ثبت سفارش اطلاعات زیر را در یک پیام ارسال کنید:\n\n"
-        "👟 کد کفش:\n"
-        "📏 سایز:\n"
-        "👤 نام و نام خانوادگی:\n"
-        "📱 شماره تماس:\n"
-        "📍 شهر:\n\n"
-        "پشتیبانی سفارش شما را بررسی می‌کند."
+async def buy_product(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    code = query.data.split(":")[1]
+
+    product = PRODUCTS.get(code)
+
+    if not product:
+        await query.message.reply_text(
+            "❌ محصول پیدا نشد."
+        )
+        return ConversationHandler.END
+
+    context.user_data["order_product"] = code
+
+    buttons = []
+
+    for size in product["sizes"]:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"سایز {size}",
+                    callback_data=f"size:{size}",
+                )
+            ]
+        )
+
+    await query.message.reply_text(
+        "📏 سایز موردنظر را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
+    return SELECT_SIZE
+
 
 # =========================
-# پیگیری سفارش
+# انتخاب سایز
 # =========================
 
-async def track(update: Update):
-    await update.message.reply_text(
-        "📦 پیگیری سفارش\n\n"
-        "شماره تماس یا کد سفارش خود را ارسال کنید تا سفارش شما بررسی شود."
+async def select_size(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    size = query.data.split(":")[1]
+
+    context.user_data["order_size"] = size
+
+    await query.message.reply_text(
+        f"✅ سایز {size} انتخاب شد.\n\n"
+        "👤 لطفاً نام و نام خانوادگی خود را ارسال کنید:"
     )
 
+    return GET_NAME
+
 
 # =========================
-# استعلام
+# دریافت نام
 # =========================
 
-async def price(update: Update):
+async def get_name(update, context):
+
+    context.user_data["customer_name"] = update.message.text
+
     await update.message.reply_text(
-        "💬 استعلام قیمت و موجودی\n\n"
-        "لطفاً کد محصول یا عکس کفش موردنظر را ارسال کنید."
+        "📱 شماره موبایل خود را ارسال کنید:"
     )
 
+    return GET_PHONE
+
 
 # =========================
-# پشتیبانی
+# دریافت شماره
 # =========================
 
-async def support(update: Update):
+async def get_phone(update, context):
+
+    context.user_data["customer_phone"] = update.message.text
+
     await update.message.reply_text(
-        "👨‍💬 پشتیبانی کتونی 530\n\n"
-        "پیام خود را همین‌جا ارسال کنید.\n"
-        "پشتیبانی در اولین فرصت پاسخ می‌دهد."
+        "📍 آدرس کامل برای ارسال سفارش را وارد کنید:"
     )
 
+    return GET_ADDRESS
+
 
 # =========================
-# کانال تلگرام
+# دریافت آدرس و ثبت سفارش
 # =========================
 
-async def channel(update: Update):
+async def get_address(update, context):
+
+    context.user_data["customer_address"] = update.message.text
+
+    code = context.user_data.get("order_product")
+    size = context.user_data.get("order_size")
+    name = context.user_data.get("customer_name")
+    phone = context.user_data.get("customer_phone")
+    address = context.user_data.get("customer_address")
+
+    product = PRODUCTS.get(code)
+
+    if not product:
+        await update.message.reply_text(
+            "❌ خطا در ثبت سفارش."
+        )
+        return ConversationHandler.END
+
+    price = toman_price(product["price_usd"])
+
+    order_text = (
+        "✅ سفارش شما ثبت شد\n\n"
+        f"👟 محصول: {product['name']}\n"
+        f"🔖 کد: {code}\n"
+        f"📏 سایز: {size}\n"
+        f"💰 مبلغ: {format_price(price)} تومان\n\n"
+        f"👤 نام: {name}\n"
+        f"📱 موبایل: {phone}\n"
+        f"📍 آدرس: {address}\n\n"
+        "فروشگاه کتونی 530 👟"
+    )
+
+    await update.message.reply_text(
+        order_text,
+        reply_markup=main_menu(),
+    )
+
+    return ConversationHandler.END
+
+
+# =========================
+# لغو سفارش
+# =========================
+
+async def cancel_order(update, context):
+
+    await update.message.reply_text(
+        "❌ ثبت سفارش لغو شد.",
+        reply_markup=main_menu(),
+    )
+
+    return ConversationHandler.END
+
+
+# =========================
+# کانال
+# =========================
+
+async def channel(update, context):
+
     keyboard = InlineKeyboardMarkup(
         [
             [
@@ -293,82 +465,197 @@ async def channel(update: Update):
     )
 
     await update.message.reply_text(
-        "📣 برای مشاهده جدیدترین مدل‌ها وارد کانال شوید:",
+        "📣 کانال رسمی فروشگاه کتونی 530",
         reply_markup=keyboard,
     )
 
 
 # =========================
-# پیام‌های کاربران
+# پشتیبانی
 # =========================
 
-async def messages(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def support(update, context):
+
+    await update.message.reply_text(
+        "👨‍💬 پشتیبانی کتونی 530\n\n"
+        "پیام خود را ارسال کنید تا فروشگاه بررسی کند."
+    )
+
+
+# =========================
+# پیگیری سفارش
+# =========================
+
+async def track_order(update, context):
+
+    await update.message.reply_text(
+        "📦 برای پیگیری سفارش، کد یا شماره سفارش خود را ارسال کنید."
+    )
+
+
+# =========================
+# استعلام
+# =========================
+
+async def inquiry(update, context):
+
+    await update.message.reply_text(
+        "💬 برای استعلام قیمت و موجودی، کد کفش را ارسال کنید.\n\n"
+        "مثال: K530-05"
+    )
+
+    context.user_data["waiting_for_code"] = True
+
+
+# =========================
+# ثبت سفارش از منو
+# =========================
+
+async def order_menu(update, context):
+
+    await update.message.reply_text(
+        "🛒 ابتدا محصول موردنظر را از بخش مردانه یا زنانه انتخاب کنید، "
+        "سپس روی «خرید این محصول» بزنید."
+    )
+
+
+# =========================
+# پیام‌های متنی
+# =========================
+
+async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if not await require_member(update, context):
         return
 
-    text = update.message.text
+    text = update.message.text.strip()
 
     if text == "👟 کفش مردانه ۴۱ تا ۴۵":
-        await men(update)
+        await men_products(update, context)
+        return
 
-    elif text == "👟 کفش زنانه ۳۷ تا ۴۰":
-        await women(update)
+    if text == "👟 کفش زنانه ۳۷ تا ۴۰":
+        await women_products(update, context)
+        return
 
-    elif text == "🔎 جستجو با کد محصول":
-        await search_product(update)
+    if text == "🔎 جستجو با کد محصول":
+        await search_product(update, context)
+        return
 
-    elif text == "🛒 ثبت سفارش":
-        await order(update)
+    if text == "🛒 ثبت سفارش":
+        await order_menu(update, context)
+        return
 
-    elif text == "📦 پیگیری سفارش":
-        await track(update)
+    if text == "📦 پیگیری سفارش":
+        await track_order(update, context)
+        return
 
-    elif text == "💬 استعلام قیمت و موجودی":
-        await price(update)
+    if text == "💬 استعلام قیمت و موجودی":
+        await inquiry(update, context)
+        return
 
-    elif text == "👨‍💬 پشتیبانی":
-        await support(update)
+    if text == "👨‍💬 پشتیبانی":
+        await support(update, context)
+        return
 
-    elif text == "📣 کانال تلگرام":
-        await channel(update)
+    if text == "📣 کانال تلگرام":
+        await channel(update, context)
+        return
 
-    else:
-        await update.message.reply_text(
-            "پیام شما دریافت شد ✅\n\n"
-            "برای انتخاب بخش موردنظر از منوی پایین استفاده کنید.",
-            reply_markup=MAIN_MENU,
+    if context.user_data.get("waiting_for_code"):
+
+        context.user_data["waiting_for_code"] = False
+
+        await show_product(
+            update.message,
+            text.upper(),
         )
+        return
+
+    # اگر مشتری مستقیماً کد محصول فرستاد
+    if text.upper() in PRODUCTS:
+        await show_product(
+            update.message,
+            text.upper(),
+        )
+        return
+
+    await update.message.reply_text(
+        "لطفاً یکی از گزینه‌های منو را انتخاب کنید 👇",
+        reply_markup=main_menu(),
+    )
 
 
 # =========================
-# اجرای ربات
+# MAIN
 # =========================
 
 def main():
 
     if not TOKEN:
         raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN در Railway تنظیم نشده است."
+            "TELEGRAM_BOT_TOKEN تنظیم نشده است."
         )
 
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("products", products))
-    app.add_handler(CommandHandler("search", search_product))
-    app.add_handler(CommandHandler("order", order))
-    app.add_handler(CommandHandler("track", track))
-    app.add_handler(CommandHandler("support", support))
+    order_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                buy_product,
+                pattern=r"^buy:",
+            )
+        ],
+        states={
+            SELECT_SIZE: [
+                CallbackQueryHandler(
+                    select_size,
+                    pattern=r"^size:",
+                )
+            ],
+            GET_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    get_name,
+                )
+            ],
+            GET_PHONE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    get_phone,
+                )
+            ],
+            GET_ADDRESS: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    get_address,
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler(
+                "cancel",
+                cancel_order,
+            )
+        ],
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start,
+        )
+    )
 
     app.add_handler(
         CallbackQueryHandler(
             check_join,
-            pattern="^check_join$",
+            pattern=r"^check_join$",
         )
     )
+
+    # این باید قبل از MessageHandler اصلی باشد
+    app.add_handler(order_conversation)
 
     app.add_handler(
         MessageHandler(
