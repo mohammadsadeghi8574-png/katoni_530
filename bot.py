@@ -26,7 +26,7 @@ from telegram.ext import (
 
 
 # =========================================================
-# تنظیمات
+# تنظیمات اصلی
 # =========================================================
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -39,7 +39,7 @@ PORT = int(os.getenv("PORT", "8080"))
 CHANNEL = "@katooni_530"
 CHANNEL_LINK = "https://t.me/katooni_530"
 
-USD_RATE = 232_000  # تومان
+BOT_USERNAME = "katoni_530_bot"
 
 ZIBAL_REQUEST_URL = "https://gateway.zibal.ir/v1/request"
 ZIBAL_VERIFY_URL = "https://gateway.zibal.ir/v1/verify"
@@ -48,27 +48,26 @@ ZIBAL_START_URL = "https://gateway.zibal.ir/start/"
 
 # =========================================================
 # محصولات
+#
+# قیمت‌ها فقط تومان هستند.
+# دلار فعلاً کاملاً حذف شده است.
 # =========================================================
 
 PRODUCTS = {
-    "K530-05": {
-        "name": "کتونی مردانه مدل K530-05",
-        "category": "men",
-        "usd_price": 55,
-        "sizes": ["41", "42", "43", "44", "45"],
-    },
-
-    "K530-06": {
-        "name": "کتونی زنانه مدل K530-06",
+    "005": {
+        "name": "New Balance 530 🤎",
         "category": "women",
-        "usd_price": 55,
+        "price": 7_250_000,
         "sizes": ["37", "38", "39", "40"],
+
+        # فعلاً عکس را بعداً به این محصول متصل می‌کنیم.
+        "photo": None,
     },
 }
 
 
 # =========================================================
-# دیتابیس
+# دیتابیس سفارش‌ها
 # =========================================================
 
 DB_FILE = "orders.db"
@@ -120,6 +119,7 @@ def create_order(
     mobile,
     address,
 ):
+    # زیبال مبلغ را به ریال دریافت می‌کند.
     amount_rial = int(amount_toman) * 10
 
     conn = db_connection()
@@ -154,6 +154,7 @@ def create_order(
     ))
 
     order_id = cur.lastrowid
+
     conn.commit()
     conn.close()
 
@@ -170,7 +171,9 @@ def get_order(order_id):
     )
 
     row = cur.fetchone()
+
     conn.close()
+
     return row
 
 
@@ -184,7 +187,9 @@ def get_order_by_track_id(track_id):
     )
 
     row = cur.fetchone()
+
     conn.close()
+
     return row
 
 
@@ -194,14 +199,17 @@ def get_user_order(order_id, telegram_user_id):
 
     cur.execute("""
         SELECT * FROM orders
-        WHERE id = ? AND telegram_user_id = ?
+        WHERE id = ?
+        AND telegram_user_id = ?
     """, (
         order_id,
         telegram_user_id,
     ))
 
     row = cur.fetchone()
+
     conn.close()
+
     return row
 
 
@@ -211,7 +219,10 @@ def set_track_id(order_id, track_id):
 
     cur.execute(
         "UPDATE orders SET track_id = ? WHERE id = ?",
-        (str(track_id), order_id)
+        (
+            str(track_id),
+            order_id,
+        )
     )
 
     conn.commit()
@@ -244,7 +255,8 @@ def mark_order_failed(order_id):
     cur.execute("""
         UPDATE orders
         SET status = 'payment_failed'
-        WHERE id = ? AND status != 'paid'
+        WHERE id = ?
+        AND status != 'paid'
     """, (order_id,))
 
     conn.commit()
@@ -259,8 +271,13 @@ def money(value):
     return f"{int(value):,}"
 
 
-def get_price_toman(product):
-    return int(product["usd_price"] * USD_RATE)
+def normalize_code(value):
+    value = value.strip()
+
+    if value.isdigit():
+        return value.zfill(3)
+
+    return value.upper()
 
 
 def clear_mode(context):
@@ -268,23 +285,18 @@ def clear_mode(context):
 
 
 # =========================================================
-# منوی اصلی حرفه‌ای
+# منوی اصلی
 # =========================================================
 
 def main_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["👟 کفش مردانه ۴۱ تا ۴۵"],
-            ["👟 کفش زنانه ۳۷ تا ۴۰"],
-
+            ["🔥 جدیدترین مدل‌ها"],
+            ["👟 کفش زنانه", "👟 کفش مردانه"],
             ["🔎 جستجو با کد محصول"],
-
             ["🛒 ثبت سفارش", "📦 پیگیری سفارش"],
-
             ["💰 قیمت و موجودی", "📏 راهنمای سایز"],
-
             ["💳 پرداخت و مشکلات پرداخت"],
-
             ["👨‍💬 پشتیبانی", "📣 کانال تلگرام"],
         ],
         resize_keyboard=True,
@@ -334,56 +346,34 @@ async def is_member(bot, user_id):
     except Exception as e:
         print("Membership error:", e)
 
-        # اگر تلگرام موقتاً خطا داد، مشتری قفل نشود
+        # در صورت خطای موقت تلگرام مشتری قفل نشود.
         return True
 
 
 async def show_join_message(update):
-    keyboard = InlineKeyboardMarkup([
+    keyboard = InlineKeyboardMarkup(
         [
-            InlineKeyboardButton(
-                "📣 عضویت در کانال",
-                url=CHANNEL_LINK
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "✅ عضو شدم",
-                callback_data="check_membership"
-            )
+            [
+                InlineKeyboardButton(
+                    "📣 عضویت در کانال",
+                    url=CHANNEL_LINK,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ عضو شدم",
+                    callback_data="check_membership",
+                )
+            ],
         ]
-    ])
-
-    await update.effective_message.reply_text(
-        "سلام 👋\n\n"
-        "برای استفاده از ربات کتونی 530 ابتدا عضو کانال شوید 👇\n\n"
-        "بعد از عضویت روی «✅ عضو شدم» بزنید.",
-        reply_markup=keyboard,
     )
 
-
-# =========================================================
-# START
-# =========================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    clear_mode(context)
-
-    if not await is_member(
-        context.bot,
-        update.effective_user.id
-    ):
-        await show_join_message(update)
-        return
-
     await update.effective_message.reply_text(
         "سلام 👋\n\n"
-        "👟 به فروشگاه کتونی 530 خوش آمدید\n\n"
-        "از منوی زیر انتخاب کنید 👇",
-        reply_markup=main_keyboard(),
+        "برای استفاده از فروشگاه کتونی 530 "
+        "ابتدا عضو کانال شوید 👇\n\n"
+        "بعد از عضویت روی «✅ عضو شدم» بزنید.",
+        reply_markup=keyboard,
     )
 
 
@@ -392,60 +382,167 @@ async def start(
 # =========================================================
 
 async def send_product(message, code):
-    code = code.upper().strip()
+    code = normalize_code(code)
 
     product = PRODUCTS.get(code)
 
     if not product:
         await message.reply_text(
             "❌ محصولی با این کد پیدا نشد.\n\n"
-            "کد محصول را بررسی کنید و دوباره بفرستید."
+            "کد محصول را دوباره بررسی کنید.\n"
+            "مثال: 005"
         )
         return
 
-    price = get_price_toman(product)
-    sizes = " - ".join(product["sizes"])
+    sizes_text = " - ".join(product["sizes"])
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🛒 خرید این محصول",
-                callback_data=f"buy:{code}"
-            )
-        ]
-    ])
-
-    await message.reply_text(
+    caption = (
         f"👟 {product['name']}\n\n"
         f"🏷 کد محصول: {code}\n"
-        f"💵 قیمت پایه: {product['usd_price']} دلار\n"
-        f"💵 نرخ دلار: {money(USD_RATE)} تومان\n"
-        f"💰 قیمت امروز: {money(price)} تومان\n"
-        f"📏 سایزهای موجود: {sizes}\n\n"
-        "برای خرید روی دکمه زیر بزنید 👇",
+        f"📏 سایزهای موجود: {sizes_text}\n"
+        f"💰 قیمت: {money(product['price'])} تومان\n\n"
+        "برای خرید روی دکمه زیر بزنید 👇"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛒 خرید این مدل",
+                    callback_data=f"buy:{code}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📣 مشاهده کانال",
+                    url=CHANNEL_LINK,
+                )
+            ],
+        ]
+    )
+
+    if product.get("photo"):
+        try:
+            await message.reply_photo(
+                photo=product["photo"],
+                caption=caption,
+                reply_markup=keyboard,
+            )
+            return
+
+        except Exception as e:
+            print("Photo error:", e)
+
+    await message.reply_text(
+        caption,
         reply_markup=keyboard,
     )
 
 
-async def show_category(update, category):
+async def show_products_by_category(message, category):
     found = False
 
     for code, product in PRODUCTS.items():
         if product["category"] == category:
             found = True
+
             await send_product(
-                update.effective_message,
+                message,
                 code
             )
 
     if not found:
-        await update.effective_message.reply_text(
-            "فعلاً محصولی در این دسته ثبت نشده است."
+        await message.reply_text(
+            "فعلاً مدلی در این بخش ثبت نشده است."
+        )
+
+
+async def show_latest_products(message):
+    await message.reply_text(
+        "🔥 جدیدترین مدل‌های کتونی 530\n\n"
+        "مدل موردنظر را انتخاب کنید 👇"
+    )
+
+    # فعلاً همه محصولات ثبت‌شده را نمایش می‌دهیم.
+    for code in PRODUCTS:
+        await send_product(
+            message,
+            code
         )
 
 
 # =========================================================
-# دکمه‌های Inline
+# START
+#
+# /start
+#
+# یا خرید مستقیم:
+# /start 005
+#
+# لینک:
+# https://t.me/katoni_530_bot?start=005
+# =========================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    clear_mode(context)
+
+    user_id = update.effective_user.id
+
+    if not await is_member(
+        context.bot,
+        user_id
+    ):
+        # اگر مشتری از لینک محصول آمده باشد،
+        # کد را نگه می‌داریم تا بعد از عضویت محصول باز شود.
+        if context.args:
+            context.user_data[
+                "pending_product"
+            ] = normalize_code(
+                context.args[0]
+            )
+
+        await show_join_message(update)
+        return
+
+    # اگر مشتری از لینک مستقیم محصول آمده است
+    if context.args:
+        code = normalize_code(
+            context.args[0]
+        )
+
+        if code in PRODUCTS:
+            await update.message.reply_text(
+                "👋 به فروشگاه کتونی 530 خوش آمدید.\n\n"
+                "محصولی که انتخاب کردید 👇",
+                reply_markup=main_keyboard(),
+            )
+
+            await send_product(
+                update.message,
+                code
+            )
+
+            return
+
+    # ورود معمولی به ربات
+    await update.message.reply_text(
+        "سلام 👋\n\n"
+        "👟 به فروشگاه کتونی 530 خوش آمدید\n\n"
+        "🔥 جدیدترین مدل‌ها را همین پایین ببینید 👇",
+        reply_markup=main_keyboard(),
+    )
+
+    # ویترین از همان استارت
+    await show_latest_products(
+        update.message
+    )
+
+
+# =========================================================
+# دکمه‌های ربات
 # =========================================================
 
 async def button_handler(
@@ -453,56 +550,94 @@ async def button_handler(
     context: ContextTypes.DEFAULT_TYPE
 ):
     query = update.callback_query
+
     await query.answer()
 
     data = query.data
 
-    # بررسی عضویت
+    # -------------------------------------
+    # تأیید عضویت
+    # -------------------------------------
+
     if data == "check_membership":
 
-        if await is_member(
+        if not await is_member(
             context.bot,
             query.from_user.id
         ):
             await query.message.reply_text(
-                "✅ عضویت شما تأیید شد.\n\n"
-                "به فروشگاه کتونی 530 خوش آمدید 👟",
-                reply_markup=main_keyboard(),
+                "❌ هنوز عضویت شما تأیید نشده است.\n\n"
+                "ابتدا عضو کانال شوید و دوباره "
+                "روی «✅ عضو شدم» بزنید."
+            )
+
+            return
+
+        await query.message.reply_text(
+            "✅ عضویت شما تأیید شد.\n\n"
+            "به فروشگاه کتونی 530 خوش آمدید 👟",
+            reply_markup=main_keyboard(),
+        )
+
+        pending_product = (
+            context.user_data.get(
+                "pending_product"
+            )
+        )
+
+        if (
+            pending_product
+            and pending_product in PRODUCTS
+        ):
+            context.user_data.pop(
+                "pending_product",
+                None
+            )
+
+            await send_product(
+                query.message,
+                pending_product
             )
 
         else:
-            await query.message.reply_text(
-                "❌ هنوز عضویت شما تأیید نشده است.\n\n"
-                "ابتدا وارد کانال شوید و عضو شوید."
+            await show_latest_products(
+                query.message
             )
 
         return
 
-    # خرید محصول
+    # -------------------------------------
+    # خرید
+    # -------------------------------------
+
     if data.startswith("buy:"):
 
-        code = data.split(":", 1)[1]
+        code = normalize_code(
+            data.split(":", 1)[1]
+        )
+
         product = PRODUCTS.get(code)
 
         if not product:
             await query.message.reply_text(
-                "❌ محصول پیدا نشد."
+                "❌ این محصول پیدا نشد."
             )
             return
 
         buttons = []
-
         row = []
 
         for size in product["sizes"]:
             row.append(
                 InlineKeyboardButton(
-                    size,
-                    callback_data=f"size:{code}:{size}"
+                    f"سایز {size}",
+                    callback_data=(
+                        f"size:{code}:{size}"
+                    ),
                 )
             )
 
-            if len(row) == 3:
+            if len(row) == 2:
                 buttons.append(row)
                 row = []
 
@@ -510,14 +645,21 @@ async def button_handler(
             buttons.append(row)
 
         await query.message.reply_text(
-            f"📏 سایز موردنظر را انتخاب کنید:\n\n"
-            f"👟 {code}",
-            reply_markup=InlineKeyboardMarkup(buttons),
+            f"👟 {product['name']}\n"
+            f"🏷 کد: {code}\n"
+            f"💰 قیمت: {money(product['price'])} تومان\n\n"
+            "📏 سایز موردنظر را انتخاب کنید:",
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
         )
 
         return
 
+    # -------------------------------------
     # انتخاب سایز
+    # -------------------------------------
+
     if data.startswith("size:"):
 
         parts = data.split(":")
@@ -525,7 +667,10 @@ async def button_handler(
         if len(parts) != 3:
             return
 
-        code = parts[1]
+        code = normalize_code(
+            parts[1]
+        )
+
         size = parts[2]
 
         product = PRODUCTS.get(code)
@@ -536,6 +681,12 @@ async def button_handler(
             )
             return
 
+        if size not in product["sizes"]:
+            await query.message.reply_text(
+                "❌ این سایز موجود نیست."
+            )
+            return
+
         clear_mode(context)
 
         context.user_data["ordering"] = True
@@ -543,13 +694,12 @@ async def button_handler(
         context.user_data["product_code"] = code
         context.user_data["size"] = size
 
-        price = get_price_toman(product)
-
         await query.message.reply_text(
             "🛒 ثبت سفارش\n\n"
-            f"👟 محصول: {code}\n"
+            f"👟 محصول: {product['name']}\n"
+            f"🏷 کد: {code}\n"
             f"📏 سایز: {size}\n"
-            f"💰 مبلغ: {money(price)} تومان\n\n"
+            f"💰 مبلغ: {money(product['price'])} تومان\n\n"
             "👤 لطفاً نام و نام خانوادگی خود را بفرستید:",
             reply_markup=cancel_keyboard(),
         )
@@ -558,18 +708,18 @@ async def button_handler(
 
 
 # =========================================================
-# زیبال - ساخت پرداخت
+# درخواست پرداخت زیبال
 # =========================================================
 
 def create_zibal_payment(order):
     if not ZIBAL_MERCHANT:
         raise Exception(
-            "ZIBAL_MERCHANT تنظیم نشده است"
+            "ZIBAL_MERCHANT تنظیم نشده است."
         )
 
     if not PUBLIC_URL:
         raise Exception(
-            "PUBLIC_URL تنظیم نشده است"
+            "PUBLIC_URL تنظیم نشده است."
         )
 
     callback_url = (
@@ -578,10 +728,18 @@ def create_zibal_payment(order):
 
     payload = {
         "merchant": ZIBAL_MERCHANT,
-        "amount": int(order["amount_rial"]),
+
+        # مبلغ ذخیره‌شده به ریال
+        "amount": int(
+            order["amount_rial"]
+        ),
+
         "callbackUrl": callback_url,
-        "description":
-            f"Katoni 530 Order #{order['id']}",
+
+        "description": (
+            f"Katoni 530 Order #{order['id']}"
+        ),
+
         "mobile": order["mobile"],
     }
 
@@ -595,9 +753,14 @@ def create_zibal_payment(order):
 
     data = response.json()
 
-    print("Zibal request:", data)
+    print(
+        "Zibal request:",
+        data
+    )
 
-    if int(data.get("result", 0)) != 100:
+    if int(
+        data.get("result", 0)
+    ) != 100:
         raise Exception(
             data.get(
                 "message",
@@ -606,19 +769,22 @@ def create_zibal_payment(order):
         )
 
     track_id = str(
-        data.get("trackId", "")
+        data.get(
+            "trackId",
+            ""
+        )
     )
 
     if not track_id:
         raise Exception(
-            "trackId دریافت نشد"
+            "Zibal trackId دریافت نشد."
         )
 
     return track_id
 
 
 # =========================================================
-# زیبال - تایید پرداخت
+# تأیید پرداخت
 # =========================================================
 
 def verify_zibal(track_id):
@@ -639,26 +805,34 @@ def verify_zibal(track_id):
 
 
 # =========================================================
-# ارسال پیام از Callback
+# ارسال پیام تلگرام از Callback
 # =========================================================
 
-def send_telegram_sync(chat_id, text):
+def send_telegram_sync(
+    chat_id,
+    text
+):
     if not TOKEN:
         return
 
     async def sender():
-        bot = Bot(token=TOKEN)
+        bot = Bot(
+            token=TOKEN
+        )
 
         try:
             await bot.send_message(
                 chat_id=int(chat_id),
                 text=text,
             )
+
         finally:
             await bot.shutdown()
 
     try:
-        asyncio.run(sender())
+        asyncio.run(
+            sender()
+        )
 
     except Exception as e:
         print(
@@ -667,16 +841,20 @@ def send_telegram_sync(chat_id, text):
         )
 
 
-def notify_paid_order(order, ref_number):
+def notify_paid_order(
+    order,
+    ref_number
+):
     customer_text = (
         "🎉 پرداخت با موفقیت تأیید شد\n\n"
         f"🧾 شماره سفارش: {order['id']}\n"
-        f"👟 محصول: {order['product_code']}\n"
+        f"👟 محصول: {order['product_name']}\n"
+        f"🏷 کد: {order['product_code']}\n"
         f"📏 سایز: {order['size']}\n"
         f"💰 مبلغ: {money(order['amount_toman'])} تومان\n"
-        f"🔐 کد پیگیری: {ref_number}\n\n"
+        f"🔐 کد پیگیری پرداخت: {ref_number}\n\n"
         "✅ سفارش شما ثبت نهایی شد.\n"
-        "📦 سفارش برای مراحل ارسال آماده می‌شود.\n\n"
+        "📦 سفارش برای ارسال آماده می‌شود.\n\n"
         "👟 کتونی 530"
     )
 
@@ -686,10 +864,12 @@ def notify_paid_order(order, ref_number):
     )
 
     if ADMIN_CHAT_ID:
+
         admin_text = (
             "🔔 سفارش جدید پرداخت شد\n\n"
-            f"🧾 سفارش: #{order['id']}\n"
-            f"👟 محصول: {order['product_code']}\n"
+            f"🧾 شماره سفارش: #{order['id']}\n"
+            f"👟 محصول: {order['product_name']}\n"
+            f"🏷 کد: {order['product_code']}\n"
             f"📏 سایز: {order['size']}\n"
             f"💰 مبلغ: {money(order['amount_toman'])} تومان\n\n"
             f"👤 مشتری: {order['customer_name']}\n"
@@ -705,14 +885,18 @@ def notify_paid_order(order, ref_number):
 
 
 # =========================================================
-# HTTP SERVER
+# سرور Callback پرداخت
 # =========================================================
 
 class PaymentCallbackHandler(
     BaseHTTPRequestHandler
 ):
 
-    def log_message(self, format, *args):
+    def log_message(
+        self,
+        format,
+        *args
+    ):
         print(
             "HTTP:",
             format % args
@@ -725,94 +909,102 @@ class PaymentCallbackHandler(
     ):
         page = f"""
         <!doctype html>
+
         <html lang="fa" dir="rtl">
 
         <head>
 
-        <meta charset="utf-8">
+            <meta charset="utf-8">
 
-        <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1">
+            <meta
+                name="viewport"
+                content="width=device-width, initial-scale=1"
+            >
 
-        <title>{html.escape(title)}</title>
+            <title>
+                {html.escape(title)}
+            </title>
 
-        <style>
+            <style>
 
-        body {{
-            font-family: sans-serif;
-            background: #f5f5f5;
-            margin: 0;
-            padding: 30px 15px;
-            text-align: center;
-        }}
+                body {{
+                    font-family: sans-serif;
+                    background: #f5f5f5;
+                    margin: 0;
+                    padding: 30px 15px;
+                    text-align: center;
+                }}
 
-        .box {{
-            max-width: 500px;
-            margin: auto;
-            background: white;
-            border-radius: 20px;
-            padding: 30px 20px;
-            box-shadow:
-            0 4px 20px rgba(0,0,0,.08);
-        }}
+                .box {{
+                    max-width: 500px;
+                    margin: auto;
+                    background: white;
+                    border-radius: 20px;
+                    padding: 30px 20px;
+                    box-shadow:
+                        0 4px 20px
+                        rgba(0,0,0,.08);
+                }}
 
-        h2 {{
-            margin-top: 0;
-        }}
+                p {{
+                    line-height: 2;
+                }}
 
-        p {{
-            line-height: 2;
-        }}
-
-        </style>
+            </style>
 
         </head>
 
         <body>
 
-        <div class="box">
+            <div class="box">
 
-        <h2>{html.escape(title)}</h2>
+                <h2>
+                    {html.escape(title)}
+                </h2>
 
-        <p>{html.escape(message)}</p>
+                <p>
+                    {html.escape(message)}
+                </p>
 
-        <p>
-        می‌توانید این صفحه را ببندید
-        و به تلگرام برگردید.
-        </p>
+                <p>
+                    می‌توانید این صفحه را ببندید
+                    و به تلگرام برگردید.
+                </p>
 
-        <strong>
-        👟 کتونی 530
-        </strong>
+                <strong>
+                    👟 کتونی 530
+                </strong>
 
-        </div>
+            </div>
 
         </body>
 
         </html>
         """
 
-        body = page.encode("utf-8")
+        body = page.encode(
+            "utf-8"
+        )
 
         self.send_response(200)
 
         self.send_header(
             "Content-Type",
-            "text/html; charset=utf-8"
+            "text/html; charset=utf-8",
         )
 
         self.send_header(
             "Content-Length",
-            str(len(body))
+            str(len(body)),
         )
 
         self.end_headers()
 
-        self.wfile.write(body)
+        self.wfile.write(
+            body
+        )
 
     def do_GET(self):
-
         parsed = urlparse(
             self.path
         )
@@ -827,10 +1019,12 @@ class PaymentCallbackHandler(
 
             return
 
-        # Callback زیبال
         if parsed.path != "/zibal/callback":
 
-            self.send_response(404)
+            self.send_response(
+                404
+            )
+
             self.end_headers()
 
             return
@@ -873,7 +1067,7 @@ class PaymentCallbackHandler(
 
             self.send_html(
                 "خطا",
-                "سفارش پیدا نشد."
+                "سفارش مربوط به این پرداخت پیدا نشد."
             )
 
             return
@@ -882,7 +1076,11 @@ class PaymentCallbackHandler(
 
             self.send_html(
                 "پرداخت تأیید شده است ✅",
-                f"سفارش شماره {order['id']} قبلاً ثبت شده است."
+                (
+                    f"سفارش شماره "
+                    f"{order['id']} "
+                    f"قبلاً ثبت نهایی شده است."
+                )
             )
 
             return
@@ -900,7 +1098,7 @@ class PaymentCallbackHandler(
             )
 
             self.send_html(
-                "پرداخت ناموفق ❌",
+                "پرداخت ناموفق بود ❌",
                 "سفارش شما نهایی نشده است."
             )
 
@@ -931,11 +1129,12 @@ class PaymentCallbackHandler(
 
                 self.send_html(
                     "پرداخت تأیید نشد ❌",
-                    "تأیید نهایی از درگاه دریافت نشد."
+                    "تأیید نهایی پرداخت از زیبال دریافت نشد."
                 )
 
                 return
 
+            # بررسی مبلغ برای امنیت بیشتر
             verified_amount = (
                 verify_data.get(
                     "amount"
@@ -953,12 +1152,12 @@ class PaymentCallbackHandler(
                 ):
 
                     print(
-                        "SECURITY AMOUNT MISMATCH"
+                        "SECURITY: amount mismatch"
                     )
 
                     self.send_html(
-                        "خطا در مبلغ",
-                        "مبلغ پرداخت با سفارش مطابقت ندارد."
+                        "خطا در مبلغ پرداخت",
+                        "مبلغ پرداخت با مبلغ سفارش مطابقت ندارد."
                     )
 
                     return
@@ -987,7 +1186,11 @@ class PaymentCallbackHandler(
 
             self.send_html(
                 "پرداخت موفق بود ✅",
-                f"سفارش شماره {order['id']} با موفقیت ثبت شد."
+                (
+                    f"سفارش شماره "
+                    f"{order['id']} "
+                    f"با موفقیت ثبت شد."
+                )
             )
 
         except Exception as e:
@@ -999,29 +1202,34 @@ class PaymentCallbackHandler(
 
             self.send_html(
                 "خطا در بررسی پرداخت",
-                "اگر مبلغ از حساب شما کسر شده، دوباره پرداخت نکنید و با پشتیبانی تماس بگیرید."
+                (
+                    "اگر مبلغ از حساب شما کسر شده، "
+                    "دوباره پرداخت نکنید و با پشتیبانی تماس بگیرید."
+                )
             )
 
 
 def start_http_server():
-
     server = ThreadingHTTPServer(
-        ("0.0.0.0", PORT),
+        (
+            "0.0.0.0",
+            PORT
+        ),
         PaymentCallbackHandler
     )
 
     print(
-        f"HTTP server on {PORT}"
+        f"HTTP server running on port {PORT}"
     )
 
     server.serve_forever()
 
 
 # =========================================================
-# ارسال پیام مشتری برای ادمین
+# ارسال پیام مشتری به پشتیبانی
 # =========================================================
 
-async def forward_support_message(
+async def send_support_to_admin(
     update,
     context
 ):
@@ -1033,19 +1241,20 @@ async def forward_support_message(
         )
 
         clear_mode(context)
+
         return
 
     user = update.effective_user
 
     header = (
-        "📩 پیام جدید برای پشتیبانی\n\n"
-        f"👤 نام: {user.full_name}\n"
+        "📩 پیام جدید مشتری\n\n"
+        f"👤 نام تلگرام: {user.full_name}\n"
         f"🆔 Telegram ID: {user.id}\n"
     )
 
     if user.username:
         header += (
-            f"🔗 Username: @{user.username}\n"
+            f"🔗 @{user.username}\n"
         )
 
     header += (
@@ -1055,21 +1264,25 @@ async def forward_support_message(
     try:
 
         await context.bot.send_message(
-            chat_id=int(ADMIN_CHAT_ID),
+            chat_id=int(
+                ADMIN_CHAT_ID
+            ),
             text=header,
         )
 
         await update.message.copy(
-            chat_id=int(ADMIN_CHAT_ID)
+            chat_id=int(
+                ADMIN_CHAT_ID
+            )
         )
+
+        clear_mode(context)
 
         await update.message.reply_text(
             "✅ پیام شما برای پشتیبانی ارسال شد.\n\n"
             "همکاران کتونی 530 پیام شما را بررسی می‌کنند.",
             reply_markup=support_keyboard(),
         )
-
-        clear_mode(context)
 
     except Exception as e:
 
@@ -1079,8 +1292,7 @@ async def forward_support_message(
         )
 
         await update.message.reply_text(
-            "❌ ارسال پیام انجام نشد.\n"
-            "لطفاً دوباره امتحان کنید.",
+            "❌ ارسال پیام انجام نشد. لطفاً دوباره امتحان کنید.",
             reply_markup=support_keyboard(),
         )
 
@@ -1095,8 +1307,7 @@ async def text_handler(
 ):
     if (
         not update.message
-        or
-        not update.message.text
+        or not update.message.text
     ):
         return
 
@@ -1109,10 +1320,11 @@ async def text_handler(
         await show_join_message(
             update
         )
+
         return
 
     # -------------------------------------
-    # بازگشت به خانه
+    # خانه
     # -------------------------------------
 
     if text == "🏠 بازگشت به منوی اصلی":
@@ -1143,7 +1355,7 @@ async def text_handler(
         return
 
     # =====================================================
-    # سفارش
+    # مراحل سفارش
     # =====================================================
 
     if context.user_data.get(
@@ -1154,13 +1366,13 @@ async def text_handler(
             "step"
         )
 
-        # نام
+        # نام مشتری
         if step == "name":
 
             if len(text) < 2:
 
                 await update.message.reply_text(
-                    "لطفاً نام و نام خانوادگی را وارد کنید."
+                    "لطفاً نام و نام خانوادگی خود را وارد کنید."
                 )
 
                 return
@@ -1214,8 +1426,7 @@ async def text_handler(
             ] = "address"
 
             await update.message.reply_text(
-                "📍 لطفاً آدرس کامل را وارد کنید.\n\n"
-                "استان، شهر، خیابان و مشخصات لازم برای ارسال را بنویسید.",
+                "📍 لطفاً آدرس کامل برای ارسال را بنویسید:",
                 reply_markup=cancel_keyboard(),
             )
 
@@ -1259,9 +1470,7 @@ async def text_handler(
 
                 return
 
-            price = get_price_toman(
-                product
-            )
+            price = product["price"]
 
             try:
 
@@ -1301,10 +1510,8 @@ async def text_handler(
                     order_id
                 )
 
-                track_id = (
-                    create_zibal_payment(
-                        order
-                    )
+                track_id = create_zibal_payment(
+                    order
                 )
 
                 set_track_id(
@@ -1316,14 +1523,16 @@ async def text_handler(
                     f"{ZIBAL_START_URL}{track_id}"
                 )
 
-                keyboard = InlineKeyboardMarkup([
+                keyboard = InlineKeyboardMarkup(
                     [
-                        InlineKeyboardButton(
-                            "💳 پرداخت آنلاین",
-                            url=payment_url
-                        )
+                        [
+                            InlineKeyboardButton(
+                                "💳 پرداخت آنلاین",
+                                url=payment_url,
+                            )
+                        ]
                     ]
-                ])
+                )
 
                 customer_name = (
                     context.user_data[
@@ -1346,14 +1555,15 @@ async def text_handler(
                 await update.message.reply_text(
                     "🧾 فاکتور سفارش\n\n"
                     f"🔢 شماره سفارش: {order_id}\n"
-                    f"👟 محصول: {code}\n"
+                    f"👟 محصول: {product['name']}\n"
+                    f"🏷 کد: {code}\n"
                     f"📏 سایز: {size}\n"
                     f"💰 مبلغ: {money(price)} تومان\n\n"
                     f"👤 نام: {customer_name}\n"
                     f"📱 موبایل: {mobile}\n"
                     f"📍 آدرس: {address}\n\n"
-                    "⚠️ سفارش هنوز ثبت نهایی نشده است.\n\n"
-                    "برای نهایی شدن سفارش، پرداخت را انجام دهید 👇",
+                    "⚠️ سفارش هنوز نهایی نشده است.\n\n"
+                    "برای ثبت نهایی، پرداخت را انجام دهید 👇",
                     reply_markup=keyboard,
                 )
 
@@ -1378,20 +1588,18 @@ async def text_handler(
             return
 
     # =====================================================
-    # جستجو
+    # جستجوی محصول
     # =====================================================
 
     if context.user_data.get(
         "searching"
     ):
 
-        context.user_data[
-            "searching"
-        ] = False
+        clear_mode(context)
 
         await send_product(
             update.message,
-            text
+            normalize_code(text)
         )
 
         return
@@ -1405,7 +1613,9 @@ async def text_handler(
     ):
 
         try:
-            order_id = int(text)
+            order_id = int(
+                text
+            )
 
         except ValueError:
 
@@ -1425,7 +1635,7 @@ async def text_handler(
         if not order:
 
             await update.message.reply_text(
-                "❌ سفارشی با این شماره برای حساب شما پیدا نشد.",
+                "❌ سفارشی با این شماره برای شما پیدا نشد.",
                 reply_markup=cancel_keyboard(),
             )
 
@@ -1445,7 +1655,7 @@ async def text_handler(
 
         elif status == "payment_failed":
             status_text = (
-                "❌ پرداخت ناموفق / لغو شده"
+                "❌ پرداخت ناموفق یا لغو شده"
             )
 
         else:
@@ -1455,8 +1665,9 @@ async def text_handler(
 
         await update.message.reply_text(
             "📦 وضعیت سفارش\n\n"
-            f"🔢 شماره: {order['id']}\n"
-            f"👟 محصول: {order['product_code']}\n"
+            f"🔢 شماره سفارش: {order['id']}\n"
+            f"👟 محصول: {order['product_name']}\n"
+            f"🏷 کد: {order['product_code']}\n"
             f"📏 سایز: {order['size']}\n"
             f"💰 مبلغ: {money(order['amount_toman'])} تومان\n"
             f"📌 وضعیت: {status_text}",
@@ -1466,14 +1677,14 @@ async def text_handler(
         return
 
     # =====================================================
-    # پشتیبانی مستقیم
+    # پیام پشتیبانی
     # =====================================================
 
     if context.user_data.get(
         "support_mode"
     ):
 
-        await forward_support_message(
+        await send_support_to_admin(
             update,
             context
         )
@@ -1484,20 +1695,28 @@ async def text_handler(
     # منوی اصلی
     # =====================================================
 
-    if text == "👟 کفش مردانه ۴۱ تا ۴۵":
+    if text == "🔥 جدیدترین مدل‌ها":
 
-        await show_category(
-            update,
-            "men"
+        await show_latest_products(
+            update.message
         )
 
         return
 
-    if text == "👟 کفش زنانه ۳۷ تا ۴۰":
+    if text == "👟 کفش زنانه":
 
-        await show_category(
-            update,
+        await show_products_by_category(
+            update.message,
             "women"
+        )
+
+        return
+
+    if text == "👟 کفش مردانه":
+
+        await show_products_by_category(
+            update.message,
+            "men"
         )
 
         return
@@ -1513,7 +1732,7 @@ async def text_handler(
         await update.message.reply_text(
             "🔎 کد محصول را وارد کنید.\n\n"
             "مثال:\n"
-            "K530-05",
+            "005",
             reply_markup=cancel_keyboard(),
         )
 
@@ -1522,9 +1741,9 @@ async def text_handler(
     if text == "🛒 ثبت سفارش":
 
         await update.message.reply_text(
-            "🛒 ثبت سفارش\n\n"
-            "ابتدا مدل موردنظر را از بخش کفش مردانه یا زنانه انتخاب کنید.\n\n"
-            "سپس روی «🛒 خرید این محصول» بزنید.",
+            "🛒 برای ثبت سفارش ابتدا مدل کفش را انتخاب کنید.\n\n"
+            "می‌توانید از «🔥 جدیدترین مدل‌ها» استفاده کنید "
+            "یا کد محصول را جستجو کنید.",
             reply_markup=main_keyboard(),
         )
 
@@ -1539,8 +1758,7 @@ async def text_handler(
         ] = True
 
         await update.message.reply_text(
-            "📦 پیگیری سفارش\n\n"
-            "شماره سفارش خود را وارد کنید:",
+            "📦 شماره سفارش خود را وارد کنید:",
             reply_markup=cancel_keyboard(),
         )
 
@@ -1558,10 +1776,9 @@ async def text_handler(
         ] = True
 
         await update.message.reply_text(
-            "💰 استعلام قیمت و موجودی\n\n"
+            "💰 برای مشاهده قیمت و موجودی، "
             "کد محصول را وارد کنید.\n\n"
-            "مثال:\n"
-            "K530-05",
+            "مثال: 005",
             reply_markup=cancel_keyboard(),
         )
 
@@ -1574,11 +1791,9 @@ async def text_handler(
 
         await update.message.reply_text(
             "📏 راهنمای انتخاب سایز\n\n"
-            "👟 کفش مردانه:\n"
-            "سایزهای 41 تا 45\n\n"
-            "👟 کفش زنانه:\n"
-            "سایزهای 37 تا 40\n\n"
-            "اگر بین دو سایز شک دارید، از بخش پشتیبانی پیام بدهید تا راهنمایی‌تان کنیم.",
+            "سایزهای موجود هر مدل داخل مشخصات همان محصول نمایش داده می‌شود.\n\n"
+            "اگر بین دو سایز شک دارید، "
+            "از بخش پشتیبانی پیام بدهید.",
             reply_markup=support_keyboard(),
         )
 
@@ -1588,15 +1803,16 @@ async def text_handler(
 
         await update.message.reply_text(
             "💳 پرداخت و مشکلات پرداخت\n\n"
-            "اگر هنگام پرداخت با مشکل مواجه شدید، از منوی پشتیبانی گزینه «💳 مشکل پرداخت» را انتخاب کنید.\n\n"
-            "⚠️ اگر مبلغ از حساب شما کسر شده، دوباره پرداخت نکنید.",
+            "پرداخت سفارش‌ها از طریق درگاه امن انجام می‌شود.\n\n"
+            "⚠️ اگر مبلغ از حساب شما کسر شد ولی سفارش تأیید نشد، "
+            "دوباره پرداخت نکنید و از بخش «💳 مشکل پرداخت» پیام بدهید.",
             reply_markup=support_keyboard(),
         )
 
         return
 
     # =====================================================
-    # مرکز پشتیبانی
+    # پشتیبانی
     # =====================================================
 
     if text == "👨‍💬 پشتیبانی":
@@ -1620,7 +1836,7 @@ async def text_handler(
             "3️⃣ نام، موبایل و آدرس را وارد کنید.\n"
             "4️⃣ فاکتور را بررسی کنید.\n"
             "5️⃣ پرداخت آنلاین را انجام دهید.\n"
-            "6️⃣ بعد از تأیید پرداخت، سفارش شما ثبت نهایی می‌شود. ✅",
+            "6️⃣ بعد از تأیید پرداخت، سفارش ثبت نهایی می‌شود. ✅",
             reply_markup=support_keyboard(),
         )
 
@@ -1636,9 +1852,9 @@ async def text_handler(
 
         await update.message.reply_text(
             "💳 مشکل پرداخت\n\n"
-            "مشکل خود را برای ما بنویسید.\n\n"
-            "اگر شماره سفارش دارید، حتماً داخل پیام بنویسید.\n\n"
-            "⚠️ اطلاعات کارت بانکی یا رمز خود را ارسال نکنید.",
+            "مشکل خود را همین‌جا بنویسید.\n\n"
+            "اگر شماره سفارش دارید، آن را هم ارسال کنید.\n\n"
+            "⚠️ شماره کارت، رمز یا اطلاعات محرمانه بانکی را ارسال نکنید.",
             reply_markup=cancel_keyboard(),
         )
 
@@ -1654,8 +1870,7 @@ async def text_handler(
 
         await update.message.reply_text(
             "🔄 تعویض / مشکل سفارش\n\n"
-            "شماره سفارش و توضیح مشکل را ارسال کنید.\n\n"
-            "در صورت نیاز می‌توانید عکس محصول را هم برای پشتیبانی ارسال کنید.",
+            "شماره سفارش و توضیح مشکل را برای ما ارسال کنید.",
             reply_markup=cancel_keyboard(),
         )
 
@@ -1680,18 +1895,20 @@ async def text_handler(
 
     if text == "📣 کانال تلگرام":
 
-        keyboard = InlineKeyboardMarkup([
+        keyboard = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton(
-                    "📣 ورود به کانال کتونی 530",
-                    url=CHANNEL_LINK
-                )
+                [
+                    InlineKeyboardButton(
+                        "📣 ورود به کانال کتونی 530",
+                        url=CHANNEL_LINK,
+                    )
+                ]
             ]
-        ])
+        )
 
         await update.message.reply_text(
             "📣 کانال رسمی کتونی 530\n\n"
-            "برای مشاهده مدل‌های جدید وارد کانال شوید 👇",
+            "جدیدترین مدل‌ها را در کانال ببینید 👇",
             reply_markup=keyboard,
         )
 
@@ -1704,7 +1921,7 @@ async def text_handler(
 
 
 # =========================================================
-# عکس و فایل در حالت پشتیبانی
+# عکس و فایل پشتیبانی
 # =========================================================
 
 async def media_handler(
@@ -1725,6 +1942,7 @@ async def media_handler(
         return
 
     if not ADMIN_CHAT_ID:
+
         await update.message.reply_text(
             "❌ پشتیبانی در حال حاضر در دسترس نیست."
         )
@@ -1734,7 +1952,7 @@ async def media_handler(
     user = update.effective_user
 
     header = (
-        "📩 فایل/عکس جدید از مشتری\n\n"
+        "📩 عکس/فایل جدید از مشتری\n\n"
         f"👤 {user.full_name}\n"
         f"🆔 {user.id}"
     )
@@ -1747,12 +1965,16 @@ async def media_handler(
     try:
 
         await context.bot.send_message(
-            chat_id=int(ADMIN_CHAT_ID),
+            chat_id=int(
+                ADMIN_CHAT_ID
+            ),
             text=header,
         )
 
         await update.message.copy(
-            chat_id=int(ADMIN_CHAT_ID)
+            chat_id=int(
+                ADMIN_CHAT_ID
+            )
         )
 
         clear_mode(context)
@@ -1775,7 +1997,7 @@ async def media_handler(
 
 
 # =========================================================
-# دستورات
+# Commands
 # =========================================================
 
 async def products_command(
@@ -1784,9 +2006,8 @@ async def products_command(
 ):
     clear_mode(context)
 
-    await update.message.reply_text(
-        "👟 دسته‌بندی موردنظر را انتخاب کنید:",
-        reply_markup=main_keyboard(),
+    await show_latest_products(
+        update.message
     )
 
 
@@ -1802,7 +2023,7 @@ async def search_command(
 
     await update.message.reply_text(
         "🔎 کد محصول را ارسال کنید.\n"
-        "مثال: K530-05",
+        "مثال: 005",
         reply_markup=cancel_keyboard(),
     )
 
@@ -1814,7 +2035,7 @@ async def order_command(
     clear_mode(context)
 
     await update.message.reply_text(
-        "🛒 ابتدا محصول موردنظر را انتخاب کنید.",
+        "🛒 ابتدا مدل موردنظر را انتخاب کنید.",
         reply_markup=main_keyboard(),
     )
 
@@ -1849,7 +2070,7 @@ async def support_command(
 
 
 # =========================================================
-# MAIN
+# اجرای برنامه
 # =========================================================
 
 def main():
@@ -1871,13 +2092,15 @@ def main():
 
     init_db()
 
+    # سرور پرداخت Railway
     http_thread = threading.Thread(
         target=start_http_server,
-        daemon=True
+        daemon=True,
     )
 
     http_thread.start()
 
+    # ربات تلگرام
     app = (
         Application
         .builder()
@@ -1924,3 +2147,42 @@ def main():
         CommandHandler(
             "support",
             support_command
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            button_handler
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            (
+                filters.PHOTO
+                | filters.Document.ALL
+                | filters.VIDEO
+            ),
+            media_handler
+        )
+    )
+
+    print(
+        "Katoni 530 bot started successfully"
+    )
+
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
+
+
+if __name__ == "__main__":
+    main()
